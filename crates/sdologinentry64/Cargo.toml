@@ -1,0 +1,19 @@
+[package]
+name = "sdologinentry64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "游戏侧 64 位 sdologinentry64.dll（无网络，只读 env 交接）"
+
+[lib]
+name = "sdologinentry64"
+# cdylib：替换官方 sdologinentry64.dll；rlib：仅为 cargo test 提供测试目标
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+proto = { workspace = true }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Environment",
+    "Win32_System_Memory",
+] }

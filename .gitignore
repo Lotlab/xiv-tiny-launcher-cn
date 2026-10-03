@@ -1,0 +1,8 @@
+/target
+/dist
+/device.json
+/server.json
+/qrcode.png
+*.log
+cacert.pem
+docs/SELFCHECK-output.txt

@@ -1,0 +1,18 @@
+[package]
+name = "proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EXE/DLL 共用：常量、URL 模板、编码、设备档案、区服解析、脱敏日志（无网络）"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+md-5 = { workspace = true }
+getrandom = { workspace = true }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_SystemInformation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+] }

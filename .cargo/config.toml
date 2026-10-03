@@ -1,0 +1,12 @@
+# 不设 [build] target：由本机默认工具链决定，两个 target 都能出可交付产物。
+#   MSVC（默认）：cargo build
+#   GNU（可选）  ：cargo build --target x86_64-pc-windows-gnu   # 需 MSYS2/UCRT64 提供 gcc
+
+[target.x86_64-pc-windows-gnu]
+# rustc 默认即 x86_64-w64-mingw32-gcc；显式写出便于排查，
+# 也避免 PATH 上同名的 link（MSYS2 coreutils）造成歧义。
+linker = "x86_64-w64-mingw32-gcc"
+
+[target.x86_64-pc-windows-msvc]
+# 静态 CRT：否则产物会依赖 VCRUNTIME140.dll（VC++ 运行库，干净 Windows 上没有）。
+rustflags = ["-C", "target-feature=+crt-static"]
