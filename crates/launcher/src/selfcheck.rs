@@ -4,13 +4,15 @@ use proto::consts::*;
 use proto::device::Device;
 use proto::enc;
 use proto::log;
-use proto::params::Suffix;
-use proto::server;
+use sdo_client::endpoint::{
+    Endpoint, FastInLogin, GameApp, LoginApp, SsoAuthorization, SsoLogin, Suffix,
+};
+use sdo_client::server;
 
 use crate::cli::Args;
 use crate::ctx::Ctx;
 use crate::game::GameDirs;
-use crate::{areas, login};
+use crate::login;
 
 /// 逐项判定。
 enum Verdict {
@@ -99,6 +101,10 @@ pub fn run(
         run_time_id: run_time_id.to_string(),
         args: args.clone(),
     };
+    let net = sdo_client::Client::new(
+        sdo_client::Identity::from(device),
+        run_time_id.to_owned(),
+    );
 
     // QR 探测（不扫码）。
     let qr_probe = login::probe_qr(&ctx);
@@ -155,7 +161,7 @@ pub fn run(
     );
 
     // 命令行：在线/本地区服表 + 逐子区 base 断言
-    match areas::fetch_table() {
+    match crate::areas::fetch_table(&net) {
         Ok(table) => {
             let mut all_ok = true;
             for a in &table.sub_areas {
@@ -210,8 +216,10 @@ pub fn run(
     }
 
     // 回退路径
-    let fast_suffix = Suffix::login_no_group(device, run_time_id);
-    let fast_path = proto::params::path_fast_in_login(&fast_suffix, "<keepLoginKey>");
+    let login_app = LoginApp::default();
+    let id = sdo_client::Identity::from(device);
+    let fast_suffix = Suffix::login_no_group(&id, run_time_id, &login_app);
+    let fast_path = FastInLogin::new(fast_suffix, "<keepLoginKey>").path();
     let fb_ok = !fast_path.contains("groupId");
     r.line(
         "回退路径",
@@ -258,10 +266,12 @@ pub fn run(
 }
 
 fn check_sso_template(device: &Device, run_time_id: &str) -> bool {
-    let s1 = Suffix::for_sso_authorization(device, run_time_id, "7");
-    let p1 = proto::params::path_get_sso_authorization(&s1, "<tgt0>", "<guid0>");
-    let s2 = Suffix::for_sso_login(device, run_time_id, "7");
-    let p2 = proto::params::path_sso_authorization_login(&s2, "<UA>");
+    let game = GameApp::new("7");
+    let id = sdo_client::Identity::from(device);
+    let s1 = Suffix::for_sso_authorization(&id, run_time_id, &game);
+    let p1 = SsoAuthorization::new(s1, "<tgt0>", "<guid0>").path();
+    let s2 = Suffix::for_sso_login(&id, run_time_id, &game);
+    let p2 = SsoLogin::new(s2, "<UA>").path();
     !p2.contains("guid=")
         && !p2.contains("tgt=")
         && p2.contains("&epIp=&epName=")

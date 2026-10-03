@@ -153,11 +153,6 @@ impl Device {
         self.last_area_id = normalize_area_id(area_id);
         self.save_atomic(path)
     }
-
-    /// `epName` 的 URL 编码形态。
-    pub(crate) fn ep_name_encoded(&self) -> String {
-        enc::url_encode(&self.ep_name)
-    }
 }
 
 /// 大区 id 只接受十进制数字串（避免把脏数据写进 device.json）。

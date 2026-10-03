@@ -1,10 +1,12 @@
-//! 一次登录会话的共享输入。票据结构随登录链流动。
+//! 一次登录会话的共享输入。票据类型由 `sdo-client` 提供并在此重导出。
 
 use std::path::PathBuf;
 
 use proto::device::Device;
 
 use crate::cli::Args;
+
+pub use sdo_client::{GameTicket, LoginTicket};
 
 pub struct Ctx {
     pub device: Device,
@@ -22,19 +24,4 @@ impl Ctx {
         }
         lo + (proto::enc::random_u64() % (hi - lo + 1))
     }
-}
-
-/// 登录链拿到的原始票据。
-#[derive(Clone)]
-pub struct LoginTicket {
-    pub ticket: String,
-    pub tgt: String,
-    pub guid: String,
-}
-
-/// 换票后交给游戏的票据。
-#[derive(Clone)]
-pub struct GameTicket {
-    pub ticket: String,
-    pub snda_id: String,
 }

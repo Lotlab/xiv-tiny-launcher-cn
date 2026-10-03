@@ -4,8 +4,8 @@
 
 use serde_json::Value;
 
-use crate::consts::{DEFAULT_LOBBY_PORT, GAME_APP_ID};
-use crate::log;
+use proto::consts::{DEFAULT_LOBBY_PORT, GAME_APP_ID};
+use proto::log;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Meta {

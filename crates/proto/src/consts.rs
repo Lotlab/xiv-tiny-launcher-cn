@@ -96,15 +96,6 @@ pub const DLL_NAME: &str = "sdologinentry64.dll";
 /// 自研 DLL 内的构建标记；启动器据此确认目标位置放的是本项目产物而不是官方原件。
 pub const DLL_BUILD_MARKER: &str = "xiv-tiny-launcher-cn/sdologinentry64 build-marker v1";
 
-// SSO Cookie。
-pub const COOKIE_URL_CAS: &str = "https://cas.sdo.com";
-pub const COOKIE_CAS_NAME: &str = "CASTGC";
-pub const COOKIE_URL_SDO: &str = "http://www.sdo.com";
-pub const COOKIE_STATE_NAME: &str = "CAS_LOGIN_STATE";
-pub const COOKIE_DOMAIN_CAS: &str = "cas.sdo.com";
-pub const COOKIE_DOMAIN_SDO: &str = ".sdo.com";
-pub const COOKIE_EXPIRED: &str = "Thu, 01-Jan-1970";
-
 /// Login 系列 IID：游戏实际传第二个值，其余为表值兼容。
 pub const IID_LOGIN: [&str; 4] = [
     "AD887932-2D1C-48EC-B30E-535B609C12D6",

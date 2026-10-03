@@ -1,37 +1,24 @@
-//! 区服表获取与选区。
+//! 区服表策略（成功覆盖写本地备份，失败回退本地缓存）+ 选区交互
+//!（`--area` → 上次大区 → 数字菜单）。
 
-use proto::consts::*;
-use proto::log;
-use proto::params;
-use proto::paths;
-use proto::server::{self, ServerTable, SubArea};
+use proto::consts::FILE_SERVER;
+use proto::{log, paths};
+
+use sdo_client::Client;
+use sdo_client::server::{ServerTable, SubArea};
 
 use crate::error::{Error, Result};
-use crate::http::{self, Timeout};
 use crate::ui;
 
-/// 拉取区服表；成功后覆盖写本地备份。
-pub fn fetch_table() -> Result<ServerTable> {
-    let path = params::path_server_json(proto::clock::now_millis());
-    match http::get(HOST_V3LAUNCHER, &path, Timeout::Download) {
-        Ok(r) if r.status == 200 => match server::parse_server_json(&r.text()) {
-            Ok(t) => {
-                let file = paths::cwd_file(FILE_SERVER);
-                if let Err(e) = paths::write_atomic(&file, r.body.as_slice()) {
-                    log::debug(&format!("区服表备份写盘失败：{e}"));
-                }
-                Ok(t)
+/// 拉取区服表；成功后覆盖写本地备份，失败回退本地缓存。
+pub fn fetch_table(net: &Client) -> Result<ServerTable> {
+    match net.fetch_server_table() {
+        Ok(fetched) => {
+            let file = paths::cwd_file(FILE_SERVER);
+            if let Err(e) = paths::write_atomic(&file, &fetched.raw) {
+                log::debug(&format!("区服表备份写盘失败：{e}"));
             }
-            Err(e) => {
-                log::debug(&format!("区服表解析细节：{e}"));
-                log::warn("区服表异常，已使用本地缓存继续");
-                local_table()
-            }
-        },
-        Ok(r) => {
-            log::debug(&format!("区服接口状态码 {}", r.status));
-            log::warn("区服表异常，已使用本地缓存继续");
-            local_table()
+            Ok(fetched.table)
         }
         Err(e) => {
             log::debug(&format!("区服接口请求细节：{e}"));
@@ -45,7 +32,7 @@ fn local_table() -> Result<ServerTable> {
     let file = paths::cwd_file(FILE_SERVER);
     let bytes = std::fs::read(&file)
         .map_err(|e| Error::msg(format!("无网络且本地 {} 不可读: {e}", file.display())))?;
-    server::parse_server_json(&String::from_utf8_lossy(&bytes)).map_err(Error::msg)
+    sdo_client::server::parse_server_json(&String::from_utf8_lossy(&bytes)).map_err(Error::msg)
 }
 
 /// 选区优先级：`--area` → 上次记住的大区（`device.json` 的 `lastAreaId`）→ 数字菜单。
@@ -100,7 +87,7 @@ mod tests {
 {"id":"8","name":"豆豆柴","open":1,"status":"空闲","domain":"","meta":"{\"Dev.LobbyHost01\":\"ffxivlobby08.ff14.sdo.com\",\"Dev.LobbyPort01\":\"54994\",\"Dev.GMServerHost\":\"ffxivgm08.ff14.sdo.com\",\"Dev.SaveDataBankHost\":\"ffxivsdb08.ff14.sdo.com\",\"resetConfig\":\"0\"}"},
 {"id":"7","name":"猫小胖","open":1,"status":"空闲","domain":"","meta":"{\"Dev.LobbyHost01\":\"ffxivlobby07.ff14.sdo.com\",\"Dev.LobbyPort01\":\"54994\",\"Dev.GMServerHost\":\"ffxivgm07.ff14.sdo.com\",\"Dev.SaveDataBankHost\":\"ffxivsdb07.ff14.sdo.com\",\"resetConfig\":\"0\"}"}
 ]}]}}"#;
-        server::parse_server_json(text).unwrap()
+        sdo_client::server::parse_server_json(text).unwrap()
     }
 
     /// `--area` 优先级最高，且不标记为"来自上次"。

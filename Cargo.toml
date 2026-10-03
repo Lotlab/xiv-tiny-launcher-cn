@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/proto", "crates/launcher", "crates/sdologinentry64"]
+members = ["crates/proto", "crates/sdo-client", "crates/launcher", "crates/sdologinentry64"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ license = "MIT"
 
 [workspace.dependencies]
 proto = { path = "crates/proto" }
+sdo-client = { path = "crates/sdo-client" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 md-5 = "0.10"

@@ -1,17 +1,14 @@
 //! `sdo-ffxiv-launcher` — FFXIV CN（盛趣）自研启动器。
 //!
 //! 流程：设备档案 → 登录前附属请求 → 登录链（QR/push/fast）
-//! → SSO 换票 → 登录后附属请求 → 写 SSO Cookie
+//! → SSO 换票 → 登录后附属请求
 //! → 构造启动参数 → 设置交接环境变量 → 启动游戏。
 
 mod areas;
-mod auxreq;
 mod cli;
-mod cookie;
 mod ctx;
 mod error;
 mod game;
-mod http;
 mod login;
 mod qr;
 mod qrimage;
@@ -19,7 +16,6 @@ mod qrwin32;
 mod qrwindow;
 mod selfcheck;
 mod single;
-mod sso;
 mod ui;
 mod winproc;
 mod winstr;
@@ -107,11 +103,15 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
 
     game::verify_login_dll(&game.game_dir, args.skip_dll_check).map_err(Error::msg)?;
 
-    let table = areas::fetch_table()?;
+    let net = sdo_client::Client::new(
+        sdo_client::Identity::from(&device),
+        run_time_id.clone(),
+    );
+    let table = areas::fetch_table(&net)?;
     let pick =
         areas::resolve_area(&table, args.area.as_deref(), device.last_area_id.as_deref())?;
     let (area, from_last) = (pick.area, pick.from_last);
-    let base = proto::server::build_base(&area).map_err(Error::msg)?;
+    let base = sdo_client::server::build_base(&area).map_err(Error::msg)?;
     if from_last {
         println!("使用上次的大区：{}；用 --area <id> 可临时更换", area.name);
     }
@@ -126,9 +126,11 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     };
 
     // 附属请求先发出，失败不阻断。
-    auxreq::pre_login();
+    net.pre_login();
 
     let keep_flag = args.keep_login_flag();
+    // 游戏应用作用域：只在换票及换票后附属请求时使用，不是 Client 的成分。
+    let game_app = sdo_client::GameApp::new(area.id.clone());
     let mut round = 0u32;
     let (login_ticket, game_ticket) = loop {
         round += 1;
@@ -138,7 +140,7 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
             )));
         }
         let login_ticket = login::login(&mut ctx, keep_flag)?;
-        match sso::exchange(&ctx, &login_ticket, &area.id) {
+        match net.exchange(&login_ticket, &game_app) {
             Ok(game_ticket) => break (login_ticket, game_ticket),
             Err(e) => {
                 let reason = log::sanitize(&e.to_string());
@@ -150,9 +152,9 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         }
     };
 
-    auxreq::post_login(&ctx, &login_ticket, &area.id)?;
-
-    cookie::write_sso_cookies(&game_ticket.ticket);
+    net.post_login_fire_and_forget(&login_ticket.tgt, &game_app);
+    net.check_face_verify(&login_ticket.tgt)
+        .map_err(Error::msg)?;
 
     std::env::set_var(ENV_TICKET, &game_ticket.ticket);
     std::env::set_var(ENV_SNDAID, &game_ticket.snda_id);
@@ -175,8 +177,7 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     if args.stay {
         println!("等待游戏退出…");
         child.wait();
-        cookie::clear_sso_cookies();
-        println!("游戏已退出，登录信息已清理。");
+        println!("游戏已退出。");
     }
     Ok(())
 }
