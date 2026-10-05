@@ -1,4 +1,4 @@
-//! 终端交互：按键、状态行、选区菜单。
+//! 终端交互 + `sdo_client::Ui` 的实现：按键、状态行、选区菜单、二维码窗口。
 //!
 //! 除 `Keys` 外全部逻辑跨平台（`IsTerminal` + ANSI）。
 //! Windows 上用 `ReadConsoleInputW` 取单键，可以免回车按 k/q/Ctrl+C；

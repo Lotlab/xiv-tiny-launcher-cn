@@ -1,7 +1,7 @@
 //! 二维码窗口显示（失败时由调用方回退终端渲染）。
 //!
 //! 原生窗口只有 Windows 实现；其他平台上 `show` 固定返回 `Err`，
-//! 调用方（`login`）会自动回退到终端二维码。
+//! 调用方（`ui::TerminalUi`）会自动回退到终端二维码。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

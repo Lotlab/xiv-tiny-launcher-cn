@@ -3,8 +3,9 @@
 //! Windows 上直接跑 exe；其他平台要先经兼容层（wine / umu-run / 自定义命令）跑同一个 PE。
 //! 命令行转义、工作目录、句柄回收都交给 `std::process::Command`。
 //!
-//! 交接环境变量（`SDO_FFXIV_*`）由调用方在启动前写入本进程环境，子进程——包括兼容层——
-//! 自动继承；兼容层再把它映射进 Windows 进程的环境块，游戏侧 DLL 照常读得到。
+//! 交接环境变量（`SDO_FFXIV_*`）用 `Command::envs` 直接写进子进程的环境块，不改启动器
+//! 自己的进程环境；其余变量（PATH 等）照常继承。非 Windows 时兼容层把子进程环境映射进
+//! Windows 进程的环境块，游戏侧 DLL 照常读得到。
 
 use std::ffi::OsString;
 use std::path::Path;

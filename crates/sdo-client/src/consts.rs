@@ -1,7 +1,7 @@
 //! sdo-client 的字面值总表：协议表 + 流程默认值。
 //!
 //! 只被本 crate 与 EXE 用；EXE↔DLL 的 ABI 常量在 `proto::consts`。
-//! 应用口径（两个 App 的 `appId`、版本号等）是 `LOGIN_APP` / `GAME_APP` 两个常量。
+//! 应用口径（`appId`、版本号等）见 `LOGIN_APP` / `App::game`。
 
 // ── 协议表 ──
 

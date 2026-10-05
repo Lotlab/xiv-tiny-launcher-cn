@@ -3,8 +3,7 @@
 //! 模板与线上 `0.0.0.26` 的 `SdoBaseClient.dll` 逐字核对过。注意本地
 //! `Launcher3Modules` 那份是 `0.0.0.18`（无 `groupId`/`channelId`），别拿它当基准。
 //!
-//! - [`Endpoint`]：`HOST` + `TIMEOUT` + `path()`；[`Client`](crate::client::Client)
-//!   只接受端点，不再有四处拼接 query 字符串的自由函数。
+//! - [`Endpoint`]：`HOST` + `TIMEOUT` + `path()`；[`Api`](crate::Api) 只接受端点。
 //! - [`Suffix`]：公共后缀（字段顺序即拼装顺序），各端点持有它拼出完整 `path?query`。
 
 use crate::consts::*;
@@ -18,7 +17,7 @@ pub trait Endpoint {
     const HOST: &'static str;
     /// 超时种类（CAS 认证短超时 / 下载类长超时）。
     const TIMEOUT: Timeout;
-    /// `path?query`（host 由 [`Client`](crate::client::Client) 按 `HOST` 指定）。
+    /// `path?query`（host 由 [`Api`](crate::Api) 按 `HOST` 指定）。
     fn path(&self) -> String;
 }
 
