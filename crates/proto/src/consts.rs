@@ -1,4 +1,7 @@
 //! 常量总表：URL 模板、编码、本地路径与超时共用的字面值集中在此，不散落在业务代码里。
+//!
+//! 应用口径（两个 App 的 `appId`、版本号等）在 `sdo-client` 的 `endpoint::LOGIN_APP` /
+//! `endpoint::GAME_APP` —— 它们是 `App` 类型的常量值，依赖本层的字面值之外的类型。
 
 // 服务端 host：固定值，不自动切换。
 pub const HOST_CAS: &str = "cas.sdo.com";
@@ -22,22 +25,8 @@ pub const VERSION: &str = "21";
 pub const CUSTOM_SECURITY_LEVEL: &str = "2";
 pub const THIRD_LOGIN_EXTERN: &str = "0";
 
-// 登录应用（QR/push/fastInLogin/附属请求）。
-pub const LOGIN_APP_ID: &str = "791000814";
-pub const LOGIN_APP_ID_SITE: &str = "791000814";
-pub const LOGIN_AREA_ID: &str = "1";
-pub const LOGIN_GROUP_ID: &str = "1";
-pub const LOGIN_PRODUCT_VERSION: &str = "1.1.344.45";
-
-// 游戏应用（SSO 换票）。
-pub const GAME_APP_ID: &str = "100001900";
-pub const GAME_APP_ID_SITE: &str = "100001900";
-pub const GAME_GROUP_ID: &str = "-1";
-pub const SSO_SCENE: &str = "V3Launcher";
-/// `getSsoAuthorization`（用 tgt0/guid0 换 authorization）用的产品版本号。
-pub const SSO_AUTHORIZATION_PRODUCT_VERSION: &str = "1.1.344.45";
-/// `ssoAuthorizationLogin`（用 authorization 换 ticket1）用的产品版本号。
-pub const SSO_LOGIN_PRODUCT_VERSION: &str = "1.9.7.10";
+// 登录应用与游戏应用的 appId/版本号等口径不在这里：它们是 `sdo-client::endpoint` 的
+// `LOGIN_APP` / `GAME_APP` 两个常量（与 `App` 类型放一起）。
 
 /// 服务端要求的 `tag` 取值。
 pub const TAG: i32 = 0;

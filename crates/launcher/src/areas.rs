@@ -21,7 +21,7 @@ pub fn fetch_table(net: &Client) -> Result<ServerTable> {
             Ok(fetched.table)
         }
         Err(e) => {
-            log::debug(&format!("区服接口请求细节：{e}"));
+            log::debug(&format!("区服接口请求细节：{}", e.log_text()));
             log::warn("区服表异常，已使用本地缓存继续");
             local_table()
         }
@@ -32,7 +32,9 @@ fn local_table() -> Result<ServerTable> {
     let file = paths::cwd_file(FILE_SERVER);
     let bytes = std::fs::read(&file)
         .map_err(|e| Error::msg(format!("无网络且本地 {} 不可读: {e}", file.display())))?;
-    sdo_client::server::parse_server_json(&String::from_utf8_lossy(&bytes)).map_err(Error::msg)
+    Ok(sdo_client::server::parse_server_json(&String::from_utf8_lossy(
+        &bytes,
+    ))?)
 }
 
 /// 选区优先级：`--area` → 上次记住的大区（`device.json` 的 `lastAreaId`）→ 数字菜单。

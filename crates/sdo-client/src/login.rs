@@ -12,37 +12,36 @@ use crate::error::Error;
 use crate::resp;
 use crate::tickets::LoginTicket;
 
-/// 单次 `codeKeyLogin` 轮询的判定结果。
-pub enum CodeKeyPoll {
+/// 登录票据载荷（`codeKeyLogin` 与 `pushMessageLogin` 的成功结果形状相同）。
+pub struct Ticket {
+    pub ticket: String,
+    pub tgt: String,
+    pub keep_login_key: Option<String>,
+}
+
+/// 轮询单次结果（`codeKeyLogin` / `pushMessageLogin` 共用）。
+pub enum Poll {
     /// `200 && return_code == 0 && ticket/sndaId/tgt 非空`。
-    Success {
-        ticket: String,
-        tgt: String,
-        keep_login_key: Option<String>,
-    },
-    /// 未扫码：`return_code == -10515805`，继续等。
-    NotScanned,
-    /// 其它错误码：停轮询换码（内容为展示用原文）。
-    ServerError(String),
+    Success(Ticket),
+    /// 服务端表示“还没好”（未扫码 `-10515805` / 未确认 `-10516808`）：继续等。
+    Pending,
+    /// 其它错误码：停轮询（内容为展示用原文）。换码还是终止由调用方决定。
+    Fatal(String),
+}
+
+/// 从成功响应里取票据载荷。
+fn ticket_from(json: &serde_json::Value) -> Ticket {
+    Ticket {
+        ticket: resp::data_str(json, "ticket").unwrap_or_default(),
+        tgt: resp::data_str(json, "tgt").unwrap_or_default(),
+        keep_login_key: resp::data_str(json, "keepLoginKey").filter(|k| !k.is_empty()),
+    }
 }
 
 /// `fastInLogin` 成功结果（`guid` 为 `null` 时已现调一次 `getGuid` 补齐）。
 pub struct FastSuccess {
     pub ticket: LoginTicket,
     pub new_keep_key: Option<String>,
-}
-
-/// 单次 `pushMessageLogin` 轮询的判定结果。
-pub enum PushPoll {
-    Success {
-        ticket: String,
-        tgt: String,
-        keep_login_key: Option<String>,
-    },
-    /// 未确认：`return_code == -10516808`，继续等。
-    NotConfirmed,
-    /// 其它错误码：终止（内容为展示用原文）。
-    Rejected(String),
 }
 
 /// 供自检调用二维码接口（不扫码）。
@@ -54,7 +53,7 @@ pub struct QrProbe {
 
 impl Client {
     fn login_suffix(&self) -> Suffix {
-        Suffix::login(self.identity(), self.run_time_id(), self.login_app())
+        Suffix::login(self.identity(), self.run_time_id(), self.app())
     }
 
     /// `getGuid`：`HTTP != 200`/无 `guid` 直接报错（调用方不再重试，直接退出）。
@@ -97,39 +96,33 @@ impl Client {
         code_key: &str,
         guid: &str,
         keep_flag: i32,
-    ) -> Result<CodeKeyPoll> {
+    ) -> Result<Poll> {
         let ep = CodeKeyLogin::new(self.login_suffix(), code_key, guid, keep_flag);
         let r = self.get(&ep)?;
         if r.status != 200 {
-            return Err(Error::http(r.status, format!("扫码轮询状态码 {}", r.status)));
+            return Err(Error::http(r.status, "扫码轮询失败，请重试")
+                .with_detail(format!("扫码轮询状态码 {}", r.status)));
         }
         let json = r.json()?;
         if resp::is_success(&json, &["ticket", "sndaId", "tgt"]) {
-            let ticket = resp::data_str(&json, "ticket").unwrap_or_default();
-            let tgt = resp::data_str(&json, "tgt").unwrap_or_default();
-            let keep_login_key = resp::data_str(&json, "keepLoginKey").filter(|k| !k.is_empty());
-            return Ok(CodeKeyPoll::Success {
-                ticket,
-                tgt,
-                keep_login_key,
-            });
+            return Ok(Poll::Success(ticket_from(&json)));
         }
         if resp::return_code(&json) == Some(RC_QR_NOT_SCANNED) {
-            return Ok(CodeKeyPoll::NotScanned);
+            return Ok(Poll::Pending);
         }
-        Ok(CodeKeyPoll::ServerError(resp::fail_reason_text(&json)))
+        Ok(Poll::Fatal(resp::fail_reason_text(&json)))
     }
 
     /// `fastInLogin`（auto 模式优先）。`Err` = 回退 QR 的原因；
     /// 失败时调用方删本地 key，**不重发**，回退 QR。
     pub fn fast_login(&self, key: &str) -> Result<FastSuccess> {
-        let suffix = Suffix::login_no_group(self.identity(), self.run_time_id(), self.login_app());
+        let suffix = Suffix::login_no_group(self.identity(), self.run_time_id(), self.app());
         let json = match self.get(&FastInLogin::new(suffix, key)) {
             Ok(r) if r.status == 200 => match r.json() {
                 Ok(j) => j,
                 Err(e) => return Err(Error::parse(format!("自动登录解析失败: {e}"))),
             },
-            Ok(r) => return Err(Error::http(r.status, format!("自动登录 HTTP {}", r.status))),
+            Ok(r) => return Err(Error::http(r.status, "自动登录服务繁忙，请重试")),
             Err(e) => return Err(Error::transport(format!("自动登录请求失败: {e}"))),
         };
         if !resp::is_success(&json, &["ticket", "sndaId", "tgt"]) {
@@ -183,33 +176,30 @@ impl Client {
     }
 
     /// 单次 push 轮询。`Err` = 传输失败/`HTTP != 200`/解析失败（调用方计入 `attempt++` 继续等）。
-    pub fn poll_push_once(&self, session_key: &str, guid: &str) -> Result<PushPoll> {
+    pub fn poll_push_once(&self, session_key: &str, guid: &str) -> Result<Poll> {
         let ep = PushLogin::new(self.login_suffix(), session_key, guid);
         let r = self.get(&ep)?;
         if r.status != 200 {
-            return Err(Error::http(r.status, format!("手机确认轮询状态码 {}", r.status)));
+            return Err(Error::http(r.status, "手机确认轮询失败，请重试")
+                .with_detail(format!("手机确认轮询状态码 {}", r.status)));
         }
         let json = r.json()?;
         if resp::is_success(&json, &["ticket", "sndaId", "tgt"]) {
-            let ticket = resp::data_str(&json, "ticket").unwrap_or_default();
-            let tgt = resp::data_str(&json, "tgt").unwrap_or_default();
-            let keep_login_key = resp::data_str(&json, "keepLoginKey").filter(|k| !k.is_empty());
-            return Ok(PushPoll::Success {
-                ticket,
-                tgt,
-                keep_login_key,
-            });
+            return Ok(Poll::Success(ticket_from(&json)));
         }
         if resp::return_code(&json) == Some(RC_PUSH_NOT_CONFIRMED) {
-            return Ok(PushPoll::NotConfirmed);
+            return Ok(Poll::Pending);
         }
-        Ok(PushPoll::Rejected(resp::fail_reason_text(&json)))
+        Ok(Poll::Fatal(resp::fail_reason_text(&json)))
     }
 
     /// 二维码接口探测（不扫码，供自检调用）。
     pub fn probe_qr(&self) -> Result<QrProbe> {
         let guid = self.get_guid()?;
         let r = self.get(&GetCodeKey::new(self.login_suffix()))?;
+        if r.status != 200 {
+            return Err(Error::http(r.status, "二维码服务繁忙，请重试"));
+        }
         let has_codekey = resp::extract_codekey(r.header_values("set-cookie")).is_some();
         Ok(QrProbe {
             guid,

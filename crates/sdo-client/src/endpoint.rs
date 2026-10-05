@@ -4,6 +4,8 @@
 //!   只接受端点，不再有四处拼接 query 字符串的自由函数。
 //! - [`Suffix`]：公共后缀（字段顺序即拼装顺序），各端点持有它拼出完整 `path?query`。
 
+use std::borrow::Cow;
+
 use proto::consts::*;
 use proto::enc;
 
@@ -19,62 +21,54 @@ pub trait Endpoint {
     fn path(&self) -> String;
 }
 
-/// 登录应用配置：客户端的必要成分（= 抓包冻结口径）。
+/// 一个 App 的冻结口径：身份 + **它自己的一个**版本号。
 ///
-/// 登录系接口（QR/push/fast/附属请求）都归属它（`791000814/1/1` + `1.1.344.45`）。
-/// 字段是原文（`product_version` 的 `%2E` 编码发生在 [`Suffix`] 组装时）。
-/// 改这里只影响本客户端拼出的 query，不碰 `proto::consts` 的冻结常量；
-/// 自检（`login_suffix_param_order` 等）断言的是 [`LoginApp::default`] 口径。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoginApp {
-    pub app_id: String,
-    pub app_site: String,
-    pub area: String,
-    pub group: String,
-    pub product_version: String,
-}
-
-impl Default for LoginApp {
-    fn default() -> LoginApp {
-        LoginApp {
-            app_id: LOGIN_APP_ID.into(),
-            app_site: LOGIN_APP_ID_SITE.into(),
-            area: LOGIN_AREA_ID.into(),
-            group: LOGIN_GROUP_ID.into(),
-            product_version: LOGIN_PRODUCT_VERSION.into(),
-        }
-    }
-}
-
-/// 游戏应用作用域：只在 SSO 换票及换票后附属请求时使用，按次传入。
+/// 冻结字面量用 `&'static str`、选区用 [`Cow`]，所以两个 App 各自就是一个常量：
+/// [`LOGIN_APP`] / [`GAME_APP`]。换票是「从当前 App 换到新的 App」，两步各取对应
+/// App 的版本号，见 [`Suffix::for_sso_authorization`] / [`Suffix::for_sso_login`]。
 ///
-/// 它不是 [`Client`](crate::client::Client) 的成分——选区在拉表之后才确定，
-/// 且只有换票链需要它（默认 `100001900/-1` + `V3Launcher`，两个接口的版本号不同）。
-/// 用法：`Client::exchange(&ticket, &GameApp::new(area_id))`。
+/// 字段全 `pub`，需要改口径时直接构造。自检（`login_suffix_param_order` 等）
+/// 断言的是 [`LOGIN_APP`] / [`App::game`] 口径。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GameApp {
-    pub app_id: String,
-    pub app_site: String,
-    pub group: String,
-    pub scene: String,
-    /// 本次换票的目标选区。
-    pub area_id: String,
-    /// `getSsoAuthorization` 用的版本号。
-    pub auth_product_version: String,
-    /// `ssoAuthorizationLogin` 用的版本号。
-    pub login_product_version: String,
+pub struct App {
+    pub app_id: &'static str,
+    pub app_site: &'static str,
+    pub group: &'static str,
+    /// 登录系模板的 `areaId`（固定 `1`）；游戏应用的选区由 [`App::game`] 填入。
+    pub area_id: Cow<'static, str>,
+    /// `scene`；登录系模板不带（`None`）。
+    pub scene: Option<&'static str>,
+    /// 这个 App 自己的版本号。
+    pub product_version: &'static str,
 }
 
-impl GameApp {
-    pub fn new(area_id: impl Into<String>) -> GameApp {
-        GameApp {
-            app_id: GAME_APP_ID.into(),
-            app_site: GAME_APP_ID_SITE.into(),
-            group: GAME_GROUP_ID.into(),
-            scene: SSO_SCENE.into(),
-            area_id: area_id.into(),
-            auth_product_version: SSO_AUTHORIZATION_PRODUCT_VERSION.into(),
-            login_product_version: SSO_LOGIN_PRODUCT_VERSION.into(),
+/// 登录应用（QR/push/fast/附属请求）。
+pub const LOGIN_APP: App = App {
+    app_id: "791000814",
+    app_site: "791000814",
+    group: "1",
+    area_id: Cow::Borrowed("1"),
+    scene: None,
+    product_version: "1.1.344.45",
+};
+
+/// 游戏应用（SSO 换票）。`area_id` 留空：选区是运行时值（来自区服表），
+/// 完整口径用 [`App::game`] 构造；两个 SSO 接口的 `appId` 都取它。
+pub const GAME_APP: App = App {
+    app_id: "100001900",
+    app_site: "100001900",
+    group: "-1",
+    area_id: Cow::Borrowed(""),
+    scene: Some("V3Launcher"),
+    product_version: "1.9.7.10",
+};
+
+impl App {
+    /// 游戏应用 + 本次换票的目标选区。
+    pub fn game(area_id: impl Into<String>) -> App {
+        App {
+            area_id: Cow::Owned(area_id.into()),
+            ..GAME_APP
         }
     }
 }
@@ -83,7 +77,7 @@ impl GameApp {
 ///
 /// 省略约定不统一是跟服务端模板走的：`groupId/scene` 用 `Option`（整段无此参数）；
 /// `channelId/productVersion` 用空串（保留参数名、值为空，`ssoAuthorizationLogin` 要求）；
-/// `tag` 用 `-1` 哨兵（DESIGN 要求 `-1` 时跳过拼装并记 WARN，它是协议值而不只是"无"）。
+/// `tag` 用 `-1` 哨兵（`-1` 时跳过拼装，它是协议值而不只是“无”）。
 #[derive(Debug, Clone)]
 pub struct Suffix {
     pub app_id: String,
@@ -108,12 +102,14 @@ pub struct Suffix {
 
 impl Suffix {
     /// 登录应用后缀（QR/push/promotion/loginUserInfo）。
-    pub fn login(id: &Identity, run_time_id: &str, app: &LoginApp) -> Suffix {
+    ///
+    /// 模板形状由构造函数固定：登录系模板不含 `scene`，即使 `app` 带了也不拼。
+    pub fn login(id: &Identity, run_time_id: &str, app: &App) -> Suffix {
         Suffix {
-            app_id: app.app_id.clone(),
-            area_id: app.area.clone(),
-            group_id: Some(app.group.clone()),
-            app_id_site: app.app_site.clone(),
+            app_id: app.app_id.to_string(),
+            area_id: app.area_id.to_string(),
+            group_id: Some(app.group.to_string()),
+            app_id_site: app.app_site.to_string(),
             device_id: id.device_id.clone(),
             mac_id: id.mac_id.clone(),
             ep_ip: id.ep_ip.clone(),
@@ -121,45 +117,54 @@ impl Suffix {
             scene: None,
             run_time_id: run_time_id.into(),
             channel_id: CHANNEL_ID.into(),
-            product_version: enc::url_encode(&app.product_version),
+            product_version: enc::url_encode(app.product_version),
             tag: TAG,
         }
     }
 
     /// 登录应用后缀但**不含 `groupId`**（`fastInLogin` / `getSystemConfig`）。
-    pub fn login_no_group(id: &Identity, run_time_id: &str, app: &LoginApp) -> Suffix {
+    pub fn login_no_group(id: &Identity, run_time_id: &str, app: &App) -> Suffix {
         let mut s = Suffix::login(id, run_time_id, app);
         s.group_id = None;
         s
     }
 
-    /// `getSsoAuthorization` 后缀（游戏应用 + `scene` + 选区；选区取自 `game.area_id`）。
-    pub fn for_sso_authorization(id: &Identity, run_time_id: &str, game: &GameApp) -> Suffix {
+    /// `getSsoAuthorization` 后缀（换票第一步）。
+    ///
+    /// 身份（`appId/areaId/groupId/scene`）取**换入的** App（`to`），
+    /// `productVersion` 取**发起换票的当前** App（`from`）：以当前应用的版本
+    /// 申请进入目标应用的授权。
+    pub fn for_sso_authorization(
+        id: &Identity,
+        run_time_id: &str,
+        from: &App,
+        to: &App,
+    ) -> Suffix {
         Suffix {
-            app_id: game.app_id.clone(),
-            area_id: game.area_id.clone(),
-            group_id: Some(game.group.clone()),
-            app_id_site: game.app_site.clone(),
+            app_id: to.app_id.to_string(),
+            area_id: to.area_id.to_string(),
+            group_id: Some(to.group.to_string()),
+            app_id_site: to.app_site.to_string(),
             device_id: id.device_id.clone(),
             mac_id: id.mac_id.clone(),
             ep_ip: id.ep_ip.clone(),
             ep_name_enc: enc::url_encode(&id.ep_name),
-            scene: Some(game.scene.clone()),
+            scene: to.scene.map(str::to_string),
             run_time_id: run_time_id.into(),
             channel_id: CHANNEL_ID.into(),
-            product_version: enc::url_encode(&game.auth_product_version),
+            product_version: enc::url_encode(from.product_version),
             tag: TAG,
         }
     }
 
-    /// `ssoAuthorizationLogin` 后缀：无 `guid/tgt`，`epIp/runTimeId/channelId` 值为空，
-    /// 取 `ssoAuthorizationLogin` 用的版本号。
-    pub fn for_sso_login(id: &Identity, run_time_id: &str, game: &GameApp) -> Suffix {
-        let mut s = Suffix::for_sso_authorization(id, run_time_id, game);
+    /// `ssoAuthorizationLogin` 后缀（换票第二步）：无 `guid/tgt`，`epIp/runTimeId/channelId` 值为空。
+    ///
+    /// 身份与 `productVersion` 都取换入的 App（`to`）—— 此时已经“就是”那个 App。
+    pub fn for_sso_login(id: &Identity, run_time_id: &str, to: &App) -> Suffix {
+        let mut s = Suffix::for_sso_authorization(id, run_time_id, to, to);
         s.ep_ip = String::new();
         s.run_time_id = String::new();
         s.channel_id = String::new();
-        s.product_version = enc::url_encode(&game.login_product_version);
         s
     }
 
@@ -640,12 +645,12 @@ mod tests {
         }
     }
 
-    fn login_app() -> LoginApp {
-        LoginApp::default()
+    fn login_app() -> App {
+        LOGIN_APP
     }
 
-    fn game_app() -> GameApp {
-        GameApp::new("7")
+    fn game_app() -> App {
+        App::game("7")
     }
 
     const RTID: &str = "6EC5EF3932F14524AEC4862361942649";
@@ -735,7 +740,7 @@ mod tests {
 
     #[test]
     fn sso_legs_match_template() {
-        let s1 = Suffix::for_sso_authorization(&id(), RTID, &game_app());
+        let s1 = Suffix::for_sso_authorization(&id(), RTID, &login_app(), &game_app());
         let p1 = SsoAuthorization::new(s1, "ULSTGT-T0", "GUID0").path();
         let expected1 = "authenSource=1&appId=100001900&areaId=7&groupId=-1&appIdSite=100001900\
 &locale=zh_CN&productId=4&frameType=1&endpointOS=1&version=21&customSecurityLevel=2\
@@ -778,9 +783,9 @@ mod tests {
         let s = Suffix::login(&id(), RTID, &login_app());
         let fv = FaceVerify::new(
             "88440FF9DD5D5C6819D6D4652279A1BC:4F2A1C7E9B0D3568A1E4C7F02B9D6E31:",
-            LOGIN_APP_ID,
-            LOGIN_AREA_ID,
-            LOGIN_PRODUCT_VERSION,
+            LOGIN_APP.app_id,
+            LOGIN_APP.area_id.clone(),
+            LOGIN_APP.product_version,
             "ULSTGT-T0",
         )
         .path();
@@ -797,7 +802,7 @@ mod tests {
         let cfg = SystemConfig::new(Suffix::login_no_group(&id(), RTID, &login_app())).path();
         assert!(cfg.starts_with("/authen/v2/getSystemConfig?logintype=godown&authenSource=1&appId=791000814&areaId=1&appIdSite=791000814&"), "{cfg}");
         assert!(!cfg.contains("groupId"), "{cfg}");
-        assert_eq!(Agreement::new(LOGIN_APP_ID).path(), "/agreement/user?appid=791000814&scene=optimisepc&privacypolicyversion=3&serviceAgreementVersion=7");
+        assert_eq!(Agreement::new(LOGIN_APP.app_id).path(), "/agreement/user?appid=791000814&scene=optimisepc&privacypolicyversion=3&serviceAgreementVersion=7");
         assert_eq!(ServerJson::HOST, HOST_V3LAUNCHER);
     }
 
@@ -806,7 +811,7 @@ mod tests {
         let mut s = Suffix::login(&id(), RTID, &login_app());
         s.tag = -1;
         assert!(!s.to_query().contains("&tag="));
-        // channelId 非零：只 WARN，不改模板
+        // channelId 非零：只改值，不改模板形状
         let mut s2 = Suffix::login(&id(), RTID, &login_app());
         s2.channel_id = "3".into();
         assert!(s2.to_query().contains("&channelId=3&"));
@@ -815,7 +820,7 @@ mod tests {
     #[test]
     fn server_json_path_shape() {
         assert_eq!(
-            ServerJson::new(GAME_APP_ID, 1759400000123).path(),
+            ServerJson::new(GAME_APP.app_id, 1759400000123).path(),
             "/v3launcher/server/100001900/8847/server.json?time=1759400000123"
         );
     }

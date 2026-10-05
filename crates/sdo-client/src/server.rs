@@ -4,8 +4,11 @@
 
 use serde_json::Value;
 
-use proto::consts::{DEFAULT_LOBBY_PORT, GAME_APP_ID};
+use proto::consts::DEFAULT_LOBBY_PORT;
 use proto::log;
+
+use crate::endpoint::GAME_APP;
+use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Meta {
@@ -100,20 +103,17 @@ fn s(v: &Value, key: &str) -> String {
 }
 
 /// 解析 `server.json`：`data.areaInfos[].subArea[]`，`meta` 为字符串需二次解析。
-pub fn parse_server_json(text: &str) -> Result<ServerTable, String> {
+///
+/// 面向用户的文案统一是“区服列表已损坏”；具体解析器报错进 `detail`（只进日志）。
+pub fn parse_server_json(text: &str) -> Result<ServerTable> {
     const BROKEN: &str = "区服列表已损坏，请删除 server.json 后重试（将自动重新下载）";
-    let root: Value = serde_json::from_str(text).map_err(|e| {
-        log::debug(&format!("区服表解析细节：{e}"));
-        BROKEN.to_string()
-    })?;
+    let root: Value = serde_json::from_str(text)
+        .map_err(|e| Error::parse(format!("区服表解析失败：{e}")).with_user(BROKEN))?;
     let area_infos = root
         .get("data")
         .and_then(|d| d.get("areaInfos"))
         .and_then(|a| a.as_array())
-        .ok_or_else(|| {
-            log::debug("区服表解析细节：缺少 data.areaInfos");
-            BROKEN.to_string()
-        })?;
+        .ok_or_else(|| Error::parse("缺少 data.areaInfos").with_user(BROKEN))?;
     let mut sub_areas = Vec::new();
     for ai in area_infos {
         let subs = match ai.get("subArea").and_then(|x| x.as_array()) {
@@ -132,7 +132,7 @@ pub fn parse_server_json(text: &str) -> Result<ServerTable, String> {
         }
     }
     if sub_areas.is_empty() {
-        return Err("区服列表已损坏，请删除 server.json 后重试（将自动重新下载）".to_string());
+        return Err(Error::parse("areaInfos 解析后为空").with_user(BROKEN));
     }
     Ok(ServerTable { sub_areas })
 }
@@ -152,15 +152,15 @@ fn parse_meta(raw: &str) -> Option<Meta> {
 }
 
 /// 游戏命令行（字段顺序逐字固定）。
-pub fn build_base(area: &SubArea) -> Result<String, String> {
+pub fn build_base(area: &SubArea) -> Result<String> {
     let missing = area.missing_keys();
     if !missing.is_empty() {
         let keys = missing.join(", ");
         log::error(&format!("子区 {} 缺少 meta 映射键: {keys}", area.id));
-        return Err(format!(
+        return Err(Error::rejected(format!(
             "无法进入大区 {}：区服配置缺少必要字段，请稍后重试或更新启动器",
             area.id
-        ));
+        )));
     }
     // missing_keys() 为空 ⇒ meta 存在且 lobby_host 非空，因此下面两处必有值。
     let meta = area.meta.as_ref().expect("missing_keys 已保证 meta 存在");
@@ -169,7 +169,7 @@ pub fn build_base(area: &SubArea) -> Result<String, String> {
         .expect("missing_keys 已保证 Lobby 入口存在");
     Ok(format!(
         "-AppID={} -AreaID={} Dev.LobbyHost01={} Dev.LobbyPort01={} Dev.GMServerHost={} Dev.SaveDataBankHost={} resetConfig={} DEV.MaxEntitledExpansionID=1",
-        GAME_APP_ID, area.id, host, port, meta.gm_host, meta.sdb_host, meta.reset_config
+        GAME_APP.app_id, area.id, host, port, meta.gm_host, meta.sdb_host, meta.reset_config
     ))
 }
 
@@ -225,7 +225,7 @@ DEV.MaxEntitledExpansionID=1"
         assert!(missing.contains(&"Dev.SaveDataBankHost"), "{missing:?}");
         assert!(missing.contains(&"resetConfig"), "{missing:?}");
         // 面向用户的错误串不提字段名，细节留在日志里。
-        let err = build_base(a).unwrap_err();
+        let err = build_base(a).unwrap_err().to_string();
         assert!(!err.contains("Dev."), "{err}");
     }
 

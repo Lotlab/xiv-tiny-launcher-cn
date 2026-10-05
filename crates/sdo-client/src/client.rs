@@ -4,7 +4,7 @@
 //!   不设 `Referer`，Cookie jar 禁用（只取 `CODEKEY`，见 [`crate::resp`]）。
 //! - 成功条件（仅 `HTTP 200`；`200 + return_code != 0` 按失败走各自分支）由各业务方法判定，
 //!   本层只透传状态码与原文。
-//! - 错误分类见 [`Error`]；面向用户的错误不带 query，完整 URL 只写入日志。
+//! - 错误分类见 [`Error`]；用户文案与排查细节分离，完整 URL 只写入日志。
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -12,7 +12,8 @@ use std::time::Duration;
 use proto::consts::{ACCEPT, TIMEOUT_AUTH_MS, TIMEOUT_DOWNLOAD_MS, UA};
 use proto::log;
 
-use crate::endpoint::{Endpoint, LoginApp};
+use crate::auxreq::Pending;
+use crate::endpoint::{App, Endpoint, LOGIN_APP};
 
 pub use crate::error::{Error, Result};
 
@@ -87,24 +88,39 @@ impl From<&proto::device::Device> for Identity {
 }
 
 /// SDO 网络客户端：一次登录会话的网络身份
-/// （设备快照 + 本进程 `runTimeId` + 登录应用配置）。
+/// （设备快照 + 本进程 `runTimeId` + 应用口径）。
 ///
-/// 构造时克隆快照；游戏应用作用域（[`GameApp`](crate::endpoint::GameApp)）不是客户端成分，
-/// 只在换票时按次传入。
+/// 构造时克隆快照。应用口径默认是登录应用（[`LOGIN_APP`]），可用
+/// [`Client::with_app`] 覆盖；换票的游戏应用口径按次传入
+/// （[`Client::exchange`](crate::client::Client::exchange)）。
+///
+/// `Client` 同时持有自己发出的后台附属请求句柄，退出前必须调用
+/// [`Client::wait_pending`]（见 [`crate::auxreq`]）。克隆共享同一份句柄清单。
 #[derive(Debug, Clone)]
 pub struct Client {
     identity: Identity,
     run_time_id: String,
-    login: LoginApp,
+    app: App,
+    pub(crate) pending: Pending,
 }
 
 impl Client {
-    /// 按冻结口径（`proto::consts` 默认值）构造。
+    /// 按冻结口径构造（登录应用 = [`LOGIN_APP`]）。
     pub fn new(identity: Identity, run_time_id: impl Into<String>) -> Client {
+        Client::with_app(identity, run_time_id, LOGIN_APP)
+    }
+
+    /// 指定应用口径构造（需要非默认的登录应用时用）。
+    pub fn with_app(
+        identity: Identity,
+        run_time_id: impl Into<String>,
+        app: App,
+    ) -> Client {
         Client {
             identity,
             run_time_id: run_time_id.into(),
-            login: LoginApp::default(),
+            app,
+            pending: Pending::default(),
         }
     }
 
@@ -118,9 +134,16 @@ impl Client {
         &self.run_time_id
     }
 
-    /// 登录应用配置。
-    pub(crate) fn login_app(&self) -> &LoginApp {
-        &self.login
+    /// 应用口径。
+    pub(crate) fn app(&self) -> &App {
+        &self.app
+    }
+
+    /// 等待本客户端发出的后台附属请求结束，总预算 `budget`。
+    ///
+    /// 附属请求是后台线程，`process::exit` 会直接终止它们；退出前调用一次。
+    pub fn wait_pending(&self, budget: Duration) {
+        self.pending.wait(budget);
     }
 
     /// 执行一个端点：`GET https://{HOST}{path}`，返回原始响应

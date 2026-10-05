@@ -9,15 +9,21 @@
 use proto::log;
 
 use crate::client::{Client, Result};
-use crate::endpoint::{GameApp, SsoAuthorization, SsoLogin, Suffix};
+use crate::endpoint::{App, SsoAuthorization, SsoLogin, Suffix};
 use crate::error::Error;
 use crate::resp;
 use crate::tickets::{GameTicket, LoginTicket};
 
 impl Client {
-    /// 两步换出游戏票据，失败返回 Err。`game` 按次传入（选区 + 游戏应用口径）。
-    pub fn exchange(&self, login: &LoginTicket, game: &GameApp) -> Result<GameTicket> {
-        let s1 = Suffix::for_sso_authorization(self.identity(), self.run_time_id(), game);
+    /// 两步换出游戏票据，失败返回 Err。换票是「从当前 App 换到新的 App」：
+    /// 当前 App 是 `self.app()`（登录应用），`new_app` 是换入的游戏应用（选区 + 游戏口径）。
+    pub fn exchange(&self, login: &LoginTicket, new_app: &App) -> Result<GameTicket> {
+        let s1 = Suffix::for_sso_authorization(
+            self.identity(),
+            self.run_time_id(),
+            self.app(),
+            new_app,
+        );
         let r1 = self.get(&SsoAuthorization::new(s1, &login.tgt, &login.guid))?;
         if r1.status != 200 {
             return Err(Error::http(
@@ -30,7 +36,7 @@ impl Client {
             .filter(|a| !a.is_empty())
             .ok_or_else(|| Error::rejected(format!("换票失败：{}", resp::fail_reason_text(&j1))))?;
 
-        let s2 = Suffix::for_sso_login(self.identity(), self.run_time_id(), game);
+        let s2 = Suffix::for_sso_login(self.identity(), self.run_time_id(), new_app);
         let r2 = self.get(&SsoLogin::new(s2, &auth))?;
         if r2.status != 200 {
             return Err(Error::http(

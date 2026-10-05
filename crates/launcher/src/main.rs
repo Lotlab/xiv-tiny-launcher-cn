@@ -48,10 +48,20 @@ fn main() {
             1
         }
     };
-    // 附属请求全部后台发送；给它们一个短预算等待，再退出。
-    sdo_client::auxreq::wait_pending(std::time::Duration::from_millis(AUX_WAIT_BUDGET_MS));
     log::flush();
     std::process::exit(code);
+}
+
+/// 退出前等一等后台附属请求：它们是分离的线程，`process::exit` 不会等。
+///
+/// 用 `Drop` 而不是在 `run` 末尾显式调用，是为了让 `?` 提前返回的路径也覆盖到。
+struct AuxWait<'a>(&'a sdo_client::Client);
+
+impl Drop for AuxWait<'_> {
+    fn drop(&mut self) {
+        self.0
+            .wait_pending(std::time::Duration::from_millis(AUX_WAIT_BUDGET_MS));
+    }
 }
 
 fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
@@ -118,13 +128,15 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
 
     let net = sdo_client::Client::new(
         sdo_client::Identity::from(&device),
-        run_time_id.clone(),
+        run_time_id,
     );
+    // 本会话的附属请求都挂在这个 `net` 上；退出时（含提前 `?` 返回）由它统一收尾。
+    let _aux = AuxWait(&net);
     let table = areas::fetch_table(&net)?;
     let pick =
         areas::resolve_area(&table, args.area.as_deref(), device.last_area_id.as_deref())?;
     let (area, from_last) = (pick.area, pick.from_last);
-    let base = sdo_client::server::build_base(&area).map_err(Error::msg)?;
+    let base = sdo_client::server::build_base(&area)?;
     if from_last {
         println!("使用上次的大区：{}；用 --area <id> 可临时更换", area.name);
     }
@@ -134,7 +146,6 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     let mut ctx = Ctx {
         device: device.clone(),
         device_path: paths::cwd_file(FILE_DEVICE),
-        run_time_id,
         args: args.clone(),
     };
 
@@ -142,8 +153,8 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     net.pre_login();
 
     let keep_flag = args.keep_login_flag();
-    // 游戏应用作用域：只在换票及换票后附属请求时使用，不是 Client 的成分。
-    let game_app = sdo_client::GameApp::new(area.id.clone());
+    // 游戏应用口径：与登录应用同一种类型，按次传入选区。
+    let game_app = sdo_client::App::game(area.id.clone());
     let mut round = 0u32;
     let (login_ticket, game_ticket) = loop {
         round += 1;
@@ -152,7 +163,7 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
                 "换票连续 {MAX_LOGIN_ROUNDS} 轮失败，已终止"
             )));
         }
-        let login_ticket = login::login(&mut ctx, keep_flag)?;
+        let login_ticket = login::login(&mut ctx, keep_flag, &net)?;
         match net.exchange(&login_ticket, &game_app) {
             Ok(game_ticket) => break (login_ticket, game_ticket),
             Err(e) => {

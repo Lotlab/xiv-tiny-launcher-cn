@@ -1,4 +1,6 @@
 //! 一次登录会话的共享输入。票据类型由 `sdo-client` 提供并在此重导出。
+//!
+//! `runTimeId` 不在其中：它是网络身份的一部分，只属于 `sdo_client::Client`。
 
 use std::path::PathBuf;
 
@@ -11,7 +13,6 @@ pub use sdo_client::LoginTicket;
 pub struct Ctx {
     pub device: Device,
     pub device_path: PathBuf,
-    pub run_time_id: String,
     pub args: Args,
 }
 

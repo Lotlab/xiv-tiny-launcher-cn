@@ -1,16 +1,14 @@
 //! `--self-check`：自检清单逐项输出（不启动游戏）。
 
-use proto::consts::*;
 use proto::device::Device;
 use proto::enc;
 use proto::log;
 use sdo_client::endpoint::{
-    Endpoint, FastInLogin, GameApp, LoginApp, SsoAuthorization, SsoLogin, Suffix,
+    App, Endpoint, FastInLogin, GAME_APP, LOGIN_APP, SsoAuthorization, SsoLogin, Suffix,
 };
 use sdo_client::server;
 
 use crate::cli::Args;
-use crate::ctx::Ctx;
 use crate::game::GameDirs;
 use crate::login;
 
@@ -95,19 +93,13 @@ pub fn run(
         },
     );
 
-    let ctx = Ctx {
-        device: device.clone(),
-        device_path: proto::paths::cwd_file(FILE_DEVICE),
-        run_time_id: run_time_id.to_string(),
-        args: args.clone(),
-    };
     let net = sdo_client::Client::new(
         sdo_client::Identity::from(device),
         run_time_id.to_owned(),
     );
 
     // QR 探测（不扫码）。
-    let qr_probe = login::probe_qr(&ctx);
+    let qr_probe = login::probe_qr(&net);
 
     // Cookie：只确认请求默认不带 Cookie，需要技术人员抓包复核。
     r.line(
@@ -134,7 +126,7 @@ pub fn run(
             }
         }
         Err(e) => {
-            log::debug(&format!("自检二维码接口细节：{e}"));
+            log::debug(&format!("自检二维码接口细节：{}", e.log_text()));
             r.line(
                 "二维码接口",
                 Verdict::Fail,
@@ -168,7 +160,7 @@ pub fn run(
                 match server::build_base(a) {
                     Ok(base) => {
                         let ok = base.contains(&format!("-AreaID={} ", a.id))
-                            && base.starts_with(&format!("-AppID={GAME_APP_ID} "))
+                            && base.starts_with(&format!("-AppID={} ", GAME_APP.app_id))
                             && base.ends_with("DEV.MaxEntitledExpansionID=1");
                         all_ok &= ok;
                     }
@@ -223,7 +215,7 @@ pub fn run(
     }
 
     // 回退路径
-    let login_app = LoginApp::default();
+    let login_app = LOGIN_APP;
     let id = sdo_client::Identity::from(device);
     let fast_suffix = Suffix::login_no_group(&id, run_time_id, &login_app);
     let fast_path = FastInLogin::new(fast_suffix, "<keepLoginKey>").path();
@@ -273,11 +265,13 @@ pub fn run(
 }
 
 fn check_sso_template(device: &Device, run_time_id: &str) -> bool {
-    let game = GameApp::new("7");
+    // 换票：从当前 App（登录应用）换到新的 App（游戏应用）。
+    let from = LOGIN_APP;
+    let to = App::game("7");
     let id = sdo_client::Identity::from(device);
-    let s1 = Suffix::for_sso_authorization(&id, run_time_id, &game);
+    let s1 = Suffix::for_sso_authorization(&id, run_time_id, &from, &to);
     let p1 = SsoAuthorization::new(s1, "<tgt0>", "<guid0>").path();
-    let s2 = Suffix::for_sso_login(&id, run_time_id, &game);
+    let s2 = Suffix::for_sso_login(&id, run_time_id, &to);
     let p2 = SsoLogin::new(s2, "<UA>").path();
     !p2.contains("guid=")
         && !p2.contains("tgt=")
@@ -285,11 +279,11 @@ fn check_sso_template(device: &Device, run_time_id: &str) -> bool {
         && p2.contains("&runTimeId=&channelId=")
         && p2.contains(&format!(
             "productVersion={}",
-            enc::url_encode(SSO_LOGIN_PRODUCT_VERSION)
+            enc::url_encode(GAME_APP.product_version)
         ))
         && p1.contains(&format!(
             "productVersion={}",
-            enc::url_encode(SSO_AUTHORIZATION_PRODUCT_VERSION)
+            enc::url_encode(LOGIN_APP.product_version)
         ))
         && p1.contains("&scene=V3Launcher&")
 }

@@ -12,7 +12,7 @@ use crate::qr;
 use crate::ui::{self, Key};
 
 use sdo_client::Client;
-use sdo_client::login::{CodeKeyPoll, PushPoll};
+use sdo_client::login::{Poll, Ticket};
 
 pub use sdo_client::login::QrProbe;
 
@@ -23,16 +23,12 @@ pub enum Chain {
     Quit,
 }
 
-/// 按 `--mode` 选择登录链。
-pub fn login(ctx: &mut Ctx, keep_flag: i32) -> Result<LoginTicket> {
-    let net = Client::new(
-        sdo_client::Identity::from(&ctx.device),
-        ctx.run_time_id.clone(),
-    );
+/// 按 `--mode` 选择登录链。`net` 是本会话唯一的网络客户端（在 `main` 创建）。
+pub fn login(ctx: &mut Ctx, keep_flag: i32, net: &Client) -> Result<LoginTicket> {
     match ctx.args.mode {
         crate::cli::Mode::Push => {
             let account = ctx.args.account.clone().unwrap_or_default();
-            match push_login(ctx, &account, &net) {
+            match push_login(ctx, &account, net) {
                 Chain::Ok(t0) => Ok(t0),
                 Chain::Quit => Err(Error::UserQuit),
                 Chain::Fallback(reason) => {
@@ -40,14 +36,14 @@ pub fn login(ctx: &mut Ctx, keep_flag: i32) -> Result<LoginTicket> {
                         "手机登录不可用（{}），转为二维码登录",
                         log::sanitize(&reason)
                     ));
-                    qr_login(ctx, keep_flag, &net)
+                    qr_login(ctx, keep_flag, net)
                 }
             }
         }
-        crate::cli::Mode::Qr => qr_login(ctx, keep_flag, &net),
+        crate::cli::Mode::Qr => qr_login(ctx, keep_flag, net),
         crate::cli::Mode::Auto => {
             let Some(key) = ctx.device.keep_login_key.clone() else {
-                return qr_login(ctx, keep_flag, &net);
+                return qr_login(ctx, keep_flag, net);
             };
             match net.fast_login(&key) {
                 Ok(ok) => {
@@ -77,7 +73,7 @@ pub fn login(ctx: &mut Ctx, keep_flag: i32) -> Result<LoginTicket> {
                             log::debug(&format!("清除登录信息写盘失败：{e}"));
                         }
                     }
-                    qr_login(ctx, keep_flag, &net)
+                    qr_login(ctx, keep_flag, net)
                 }
             }
         }
@@ -170,22 +166,17 @@ pub fn qr_login(ctx: &mut Ctx, keep_flag: i32, net: &Client) -> Result<LoginTick
             }
 
             match net.poll_code_key_once(&code_key, &guid, keep) {
-                Ok(CodeKeyPoll::Success {
-                    ticket,
-                    tgt,
-                    keep_login_key,
-                }) => {
-                    let login_ticket =
-                        finish_login(ctx, ticket, tgt, &guid, keep_login_key)?;
+                Ok(Poll::Success(t)) => {
+                    let login_ticket = finish_login(ctx, t, &guid)?;
                     ui::status("扫码成功");
                     ui::status_end();
                     return Ok(login_ticket);
                 }
-                Ok(CodeKeyPoll::NotScanned) => {
+                Ok(Poll::Pending) => {
                     attempt += 1;
                     ui::status(&format!("[{left:>3}s] 等待扫码"));
                 }
-                Ok(CodeKeyPoll::ServerError(text)) => {
+                Ok(Poll::Fatal(text)) => {
                     log::debug(&format!("扫码返回错误：{text}"));
                     ui::status(&format!("服务端返回错误：{text}"));
                     ui::status_end();
@@ -201,7 +192,7 @@ pub fn qr_login(ctx: &mut Ctx, keep_flag: i32, net: &Client) -> Result<LoginTick
                 }
                 Err(e) => {
                     attempt += 1;
-                    log::debug(&format!("扫码轮询请求细节：{e}"));
+                    log::debug(&format!("扫码轮询请求细节：{}", e.log_text()));
                     ui::status(&format!("[{left:>3}s] 等待扫码"));
                 }
             }
@@ -232,22 +223,16 @@ pub fn qr_login(ctx: &mut Ctx, keep_flag: i32, net: &Client) -> Result<LoginTick
 }
 
 /// 成功响应组装票据；有保持登录信息就存盘。
-fn finish_login(
-    ctx: &mut Ctx,
-    ticket: String,
-    tgt: String,
-    guid: &str,
-    keep_login_key: Option<String>,
-) -> Result<LoginTicket> {
-    if let Some(k) = &keep_login_key {
+fn finish_login(ctx: &mut Ctx, t: Ticket, guid: &str) -> Result<LoginTicket> {
+    if let Some(k) = &t.keep_login_key {
         let path = ctx.device_path.clone();
         ctx.device
             .set_keep_login_key(Some(k.clone()), &path)
             .map_err(|e| Error::msg(format!("登录信息保存失败: {e}")))?;
     }
     Ok(LoginTicket {
-        ticket,
-        tgt,
+        ticket: t.ticket,
+        tgt: t.tgt,
         guid: guid.to_string(),
     })
 }
@@ -307,21 +292,16 @@ fn poll_push(ctx: &mut Ctx, session_key: &str, guid: &str, net: &Client) -> Resu
                 ctx.args.qr_timeout
             )));
         }
-        match net.poll_push_once(session_key, guid)
-        {
-            Ok(PushPoll::Success {
-                ticket,
-                tgt,
-                keep_login_key,
-            }) => {
-                return finish_login(ctx, ticket, tgt, guid, keep_login_key);
+        match net.poll_push_once(session_key, guid) {
+            Ok(Poll::Success(t)) => {
+                return finish_login(ctx, t, guid);
             }
-            Ok(PushPoll::NotConfirmed) => {
+            Ok(Poll::Pending) => {
                 attempt += 1;
                 let left = deadline.saturating_duration_since(Instant::now()).as_secs();
                 ui::status(&format!("[{left:>3}s] 等待手机确认"));
             }
-            Ok(PushPoll::Rejected(reason)) => {
+            Ok(Poll::Fatal(reason)) => {
                 return Err(Error::msg(format!(
                     "手机确认登录被服务端拒绝：{reason}"
                 )));
@@ -341,10 +321,8 @@ fn poll_push(ctx: &mut Ctx, session_key: &str, guid: &str, net: &Client) -> Resu
 }
 
 /// 供自检调用二维码接口（不扫码）。
-pub fn probe_qr(ctx: &Ctx) -> Result<QrProbe> {
-    let net = Client::new(
-        sdo_client::Identity::from(&ctx.device),
-        ctx.run_time_id.clone(),
-    );
-    Ok(net.probe_qr()?)
+///
+/// 直接返回库的 `Result`（不转成 launcher 错误）：自检要用 `Error::log_text()` 打细节。
+pub fn probe_qr(net: &Client) -> sdo_client::Result<QrProbe> {
+    net.probe_qr()
 }
