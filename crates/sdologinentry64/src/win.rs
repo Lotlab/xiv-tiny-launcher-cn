@@ -144,11 +144,11 @@ mod tests {
             data1: 0xAD887932,
             data2: 0x2D1C,
             data3: 0x48EC,
-            data4: [0xB3, 0x0E, 0x53, 0x5B, 0x60, 0x9C, 0x12, 0xD6],
+            data4: [0xB3, 0xE0, 0x53, 0x5B, 0x60, 0x9C, 0x12, 0xD6],
         };
         assert_eq!(
             guid_to_string(&g as *const Guid),
-            "AD887932-2D1C-48EC-B30E-535B609C12D6"
+            "AD887932-2D1C-48EC-B3E0-535B609C12D6"
         );
         assert_eq!(guid_to_string(std::ptr::null()), "<null>");
     }
