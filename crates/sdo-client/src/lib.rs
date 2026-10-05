@@ -15,6 +15,7 @@
 //! 回退由 EXE 完成），不做 UI（二维码渲染/按键/选区菜单在 EXE 侧）。
 
 mod api;
+mod consts;
 mod endpoint;
 mod error;
 mod flow;
@@ -27,7 +28,7 @@ mod ui;
 pub use api::{Api, FaceVerify, FastLogin, FetchedTable, Poll, ProbePaths, QrCode, Request};
 pub use endpoint::{App, GAME_APP, LOGIN_APP};
 pub use error::{Error, Kind, Result};
-pub use flow::{Flow, KeepKey, Mode, Policy};
+pub use flow::{Flow, KeepKey, Method, Policy};
 pub use tickets::GameTicket;
 pub use transport::Identity;
 pub use ui::{Action, Note, Phase, Ui, Wait};

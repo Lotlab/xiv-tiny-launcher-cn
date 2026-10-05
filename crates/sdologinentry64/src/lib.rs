@@ -5,6 +5,7 @@
 #![cfg(windows)]
 #![allow(non_snake_case)]
 
+mod consts;
 mod state;
 mod vtable;
 mod win;
@@ -12,7 +13,9 @@ mod win;
 use std::ffi::c_void;
 use std::sync::Once;
 
-use proto::consts::{DLL_BUILD_MARKER, LOG_DLL};
+use proto::consts::DLL_BUILD_MARKER;
+
+use crate::consts::LOG_DLL;
 use proto::log;
 
 use win::Guid;

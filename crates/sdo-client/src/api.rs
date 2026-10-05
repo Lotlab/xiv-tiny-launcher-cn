@@ -3,7 +3,7 @@
 //! 登录链需要的服务端值（`guid` / `codeKey` / `tgt` / `authorization`）留在对象内部，
 //! 调用方不拼 query、也不回带这些值。流程在层 2，见 [`crate::Flow`]。
 
-use proto::consts::*;
+use crate::consts::*;
 
 use crate::endpoint::{
     Agreement, App, CancelPush, CodeKeyLogin, Endpoint, FaceVerifyInit, FastInLogin, GetCodeKey,
@@ -178,11 +178,7 @@ impl Api {
 
     /// `sendPushMessage.json`：向账号发一次手机确认推送，返回会话标识。
     pub fn send_push(&self, app: &App, account: &str) -> Result<String> {
-        let guid = self
-            .guid
-            .clone()
-            .ok_or_else(|| Error::state("尚未取得 guid（先调 get_guid）"))?;
-        let ep = SendPush::new(self.suffix(app), account, guid);
+        let ep = SendPush::new(self.suffix(app), account);
         let json = match self.get(&ep) {
             Ok(r) if r.status == 200 => r.json()?,
             Ok(r) => return Err(Error::http(r.status, format!("手机推送 HTTP {}", r.status))),

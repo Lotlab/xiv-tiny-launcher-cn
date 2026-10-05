@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, ValueEnum};
 
-use proto::consts::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Mode {
@@ -47,19 +46,19 @@ pub struct Args {
     pub account: Option<String>,
 
     /// 单张二维码倒计时秒数
-    #[arg(long, default_value_t = DEFAULT_QR_TIMEOUT_SECS)]
+    #[arg(long, default_value_t = sdo_client::Policy::default().code_timeout_secs)]
     pub qr_timeout: u64,
 
     /// 单张二维码最大轮询次数
-    #[arg(long, default_value_t = DEFAULT_QR_MAX_ATTEMPTS)]
+    #[arg(long, default_value_t = sdo_client::Policy::default().max_attempts)]
     pub qr_max_attempts: u32,
 
     /// 轮询间隔下限（毫秒）
-    #[arg(long, default_value_t = DEFAULT_POLL_MIN_MS)]
+    #[arg(long, default_value_t = sdo_client::Policy::default().poll_min_ms)]
     pub poll_min_ms: u64,
 
     /// 轮询间隔上限（毫秒）
-    #[arg(long, default_value_t = DEFAULT_POLL_MAX_MS)]
+    #[arg(long, default_value_t = sdo_client::Policy::default().poll_max_ms)]
     pub poll_max_ms: u64,
 
     /// 常驻：等待游戏退出后清理登录信息；默认启动成功即退出
@@ -106,15 +105,24 @@ pub struct Args {
 }
 
 impl Args {
-    /// 构造流程参数（层 2 的 `sdo_client::Policy`）；未在 CLI 暴露的项用默认值。
+    /// 用哪条登录链；`--mode push` 缺账号在这里报错。
+    pub fn method(&self) -> Result<sdo_client::Method, String> {
+        Ok(match self.mode {
+            Mode::Qr => sdo_client::Method::Qr,
+            Mode::Auto => sdo_client::Method::Auto,
+            Mode::Push => sdo_client::Method::Push {
+                account: self
+                    .account
+                    .clone()
+                    .filter(|a| !a.trim().is_empty())
+                    .ok_or("--mode push 必须同时给出 --account")?,
+            },
+        })
+    }
+
+    /// 构造流程调参；未在 CLI 暴露的项用默认值。
     pub fn policy(&self) -> sdo_client::Policy {
         sdo_client::Policy {
-            mode: match self.mode {
-                Mode::Auto => sdo_client::Mode::Auto,
-                Mode::Qr => sdo_client::Mode::Qr,
-                Mode::Push => sdo_client::Mode::Push,
-            },
-            account: self.account.clone(),
             code_timeout_secs: self.qr_timeout,
             max_attempts: self.qr_max_attempts,
             poll_min_ms: self.poll_min_ms,
@@ -123,12 +131,9 @@ impl Args {
         }
     }
 
-    pub fn keep_login_flag(&self) -> i32 {
-        if self.no_keep_login {
-            KEEP_LOGIN_FLAG_UNSET
-        } else {
-            KEEP_LOGIN_FLAG_CHECKED
-        }
+    /// 首包是否勾选保持登录。
+    pub fn keep_login(&self) -> bool {
+        !self.no_keep_login
     }
 
     /// 参数合法性自检（不触网）。
@@ -145,9 +150,7 @@ impl Args {
         if self.qr_max_attempts < 5 || self.qr_timeout < 15 {
             eprintln!("提示：轮询参数偏小，未扫码时会很快换码");
         }
-        if self.mode == Mode::Push && self.account.as_deref().unwrap_or("").trim().is_empty() {
-            return Err("--mode push 必须同时给出 --account".into());
-        }
+        self.method()?;
         Ok(())
     }
 }
@@ -160,7 +163,7 @@ mod tests {
     #[test]
     fn keep_login_defaults_to_checked() {
         let a = Args::parse_from(["sdo-ffxiv-launcher"]);
-        assert_eq!(a.keep_login_flag(), 1, "默认勾选");
+        assert!(a.keep_login(), "默认勾选");
         assert_eq!(a.mode, Mode::Auto);
         assert_eq!(a.qr_timeout, 120);
         assert_eq!(a.qr_max_attempts, 60);
@@ -170,9 +173,9 @@ mod tests {
     }
 
     #[test]
-    fn no_keep_login_gives_unset_flag() {
+    fn no_keep_login_is_unchecked() {
         let a = Args::parse_from(["sdo-ffxiv-launcher", "--no-keep-login"]);
-        assert_eq!(a.keep_login_flag(), -1);
+        assert!(!a.keep_login());
     }
 
     #[test]

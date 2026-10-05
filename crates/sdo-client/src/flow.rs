@@ -6,7 +6,7 @@
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use proto::consts::*;
+use crate::consts::*;
 use proto::log;
 
 use crate::api::{Api, FastLogin, Poll, Request};
@@ -15,13 +15,13 @@ use crate::error::{Error, Kind, Result};
 use crate::tickets::GameTicket;
 use crate::ui::{Action, Note, Phase, Ui, Wait};
 
-/// 登录模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
+/// 用哪条登录链。账号是 push 链的必要输入，所以跟模式放在一起。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Method {
     /// 二维码扫码。
     Qr,
     /// 手机 App 确认。
-    Push,
+    Push { account: String },
     /// 有续登凭据就先试自动登录，失败回二维码。
     Auto,
 }
@@ -36,12 +36,9 @@ pub enum KeepKey {
     Clear,
 }
 
-/// 流程参数。默认值取自 `proto::consts`，EXE 按 CLI 覆盖。
+/// 流程的调参。默认值取自 `proto::consts`，EXE 按 CLI 覆盖。
 #[derive(Debug, Clone)]
 pub struct Policy {
-    pub mode: Mode,
-    /// `push` 模式用的账号。
-    pub account: Option<String>,
     /// 单张二维码 / 单次手机确认的有效秒数。
     pub code_timeout_secs: u64,
     /// 单张码最多轮询次数。
@@ -63,8 +60,6 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Policy {
         Policy {
-            mode: Mode::Auto,
-            account: None,
             code_timeout_secs: DEFAULT_QR_TIMEOUT_SECS,
             max_attempts: DEFAULT_QR_MAX_ATTEMPTS,
             poll_min_ms: DEFAULT_POLL_MIN_MS,
@@ -81,6 +76,8 @@ impl Default for Policy {
 /// FFXIV 启动器的流程。
 pub struct Flow {
     policy: Policy,
+    /// 用哪条登录链。
+    method: Method,
     /// 登录链的应用口径（"当前 App"）。
     app: App,
     /// 换入的游戏应用（含本次选区）。
@@ -91,10 +88,11 @@ pub struct Flow {
 }
 
 impl Flow {
-    /// `app` 是登录链的应用口径，`target` 是换入的游戏应用（含本次选区）。
-    pub fn new(policy: Policy, app: App, target: App) -> Flow {
+    /// `method` 是用哪条登录链，`app` 是登录链的应用口径，`target` 是换入的游戏应用。
+    pub fn new(policy: Policy, method: Method, app: App, target: App) -> Flow {
         Flow {
             policy,
+            method,
             app,
             target,
             pending: Vec::new(),
@@ -146,8 +144,9 @@ impl Flow {
         Ok(game_ticket)
     }
 
-    /// 退出前等一等后台附属请求；超时未完成的只写日志后放弃。
-    pub fn wait_pending(&mut self, budget: Duration) {
+    /// 退出前等一等后台附属请求（预算见 `Policy::aux_wait_ms`）；超时未完成的只写日志后放弃。
+    pub fn wait_pending(&mut self) {
+        let budget = Duration::from_millis(self.policy.aux_wait_ms);
         let handles = std::mem::take(&mut self.pending);
         if handles.is_empty() {
             return;
@@ -174,10 +173,9 @@ impl Flow {
 
     /// 按模式选登录链；手机链失败回退二维码。
     fn login(&mut self, api: &mut Api, ui: &mut dyn Ui, stored_keep_key: Option<&str>) -> Result<()> {
-        match self.policy.mode {
-            Mode::Qr => self.login_qr(api, ui),
-            Mode::Push => {
-                let account = self.policy.account.clone().unwrap_or_default();
+        match self.method.clone() {
+            Method::Qr => self.login_qr(api, ui),
+            Method::Push { account } => {
                 match self.login_push(api, ui, &account) {
                     Ok(()) => Ok(()),
                     Err(e) if e.is_quit() => Err(e),
@@ -190,7 +188,7 @@ impl Flow {
                     }
                 }
             }
-            Mode::Auto => {
+            Method::Auto => {
                 let Some(key) = stored_keep_key else {
                     return self.login_qr(api, ui);
                 };
@@ -314,9 +312,6 @@ impl Flow {
 
     /// 发送失败按参数重试；耗尽后由调用方转二维码。
     fn login_push(&mut self, api: &mut Api, ui: &mut dyn Ui, account: &str) -> Result<()> {
-        if account.trim().is_empty() {
-            return Err(Error::rejected("未提供 --account"));
-        }
         let mut last = Error::rejected("手机推送发送失败");
         for round in 1..=self.policy.push_send_tries {
             api.get_guid(&self.app)?;

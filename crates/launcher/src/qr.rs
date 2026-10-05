@@ -174,9 +174,9 @@ pub fn save_png_at(
     let path = match dir {
         Some(d) => {
             std::fs::create_dir_all(d)?;
-            d.join(proto::consts::FILE_QRCODE)
+            d.join(crate::consts::FILE_QRCODE)
         }
-        None => paths::cwd_file(proto::consts::FILE_QRCODE),
+        None => paths::cwd_file(crate::consts::FILE_QRCODE),
     };
     paths::write_atomic(&path, png_bytes)?;
     Ok(path)
@@ -432,7 +432,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qrout-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = save_png_at(b"not-really-png", Some(&dir)).unwrap();
-        assert_eq!(path, dir.join(proto::consts::FILE_QRCODE));
+        assert_eq!(path, dir.join(crate::consts::FILE_QRCODE));
         assert_eq!(std::fs::read(&path).unwrap(), b"not-really-png");
         let _ = std::fs::remove_dir_all(&dir);
     }

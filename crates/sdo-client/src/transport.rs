@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use proto::consts::{ACCEPT, TIMEOUT_AUTH_MS, TIMEOUT_DOWNLOAD_MS, UA};
+use crate::consts::{ACCEPT, TIMEOUT_AUTH_MS, TIMEOUT_DOWNLOAD_MS, UA};
 use proto::log;
 
 use crate::error::{Error, Result};
@@ -177,6 +177,7 @@ pub(crate) fn fetch(host: &str, path_query: &str, timeout: Timeout) -> Result<Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consts::{HOST_CAS, HOST_GFC, HOST_N_CAS, HOST_UTILITY, HOST_V3LAUNCHER};
 
     #[test]
     fn header_lookup_is_case_insensitive() {
@@ -215,11 +216,7 @@ mod tests {
     #[ignore]
     fn tls_strict_verification_works_for_all_hosts() {
         let hosts = [
-            proto::consts::HOST_CAS,
-            proto::consts::HOST_N_CAS,
-            proto::consts::HOST_GFC,
-            proto::consts::HOST_UTILITY,
-            proto::consts::HOST_V3LAUNCHER,
+            HOST_CAS, HOST_N_CAS, HOST_GFC, HOST_UTILITY, HOST_V3LAUNCHER,
         ];
         let client = http_client(Timeout::Auth).unwrap();
         for host in hosts {

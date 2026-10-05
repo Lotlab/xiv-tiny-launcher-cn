@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use proto::consts::{DLL_BUILD_MARKER, DLL_NAME, GAME_EXE, GAME_SUBDIR};
+use proto::consts::{DLL_BUILD_MARKER, DLL_NAME};
+
+use crate::consts::{GAME_EXE, GAME_SUBDIR};
 use proto::log;
 
 #[derive(Debug, Clone)]

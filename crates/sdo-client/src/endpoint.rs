@@ -1,12 +1,18 @@
 //! 接口端点：每个服务端 API 是一个结构体，query 拼接只发生在其 `path()` 内部。
 //!
+//! 模板来自抓包，并与线上 `0.0.0.26` 的 `SdoBaseClient.dll` 逐字核对过：`groupId`
+//! 在 `areaId` 之后、`appIdSite` 之前（`fastInLogin`/`getSystemConfig` 用不带它的那条）；
+//! `scene` 在 `epName` 之后（两个 SSO 请求共用，第二腿只把 `epIp`/`runTimeId`/`channelId`
+//! 传空）；`channelId` 在基模板末位，`productVersion` 与 `tag` 是之后单独追加的两段。
+//! 本地 `Launcher3Modules` 那份是 `0.0.0.18`（无 `groupId`/`channelId`），不要拿它当基准。
+//!
 //! - [`Endpoint`]：`HOST` + `TIMEOUT` + `path()`；[`Client`](crate::client::Client)
 //!   只接受端点，不再有四处拼接 query 字符串的自由函数。
 //! - [`Suffix`]：公共后缀（字段顺序即拼装顺序），各端点持有它拼出完整 `path?query`。
 
 use std::borrow::Cow;
 
-use proto::consts::*;
+use crate::consts::*;
 use proto::enc;
 
 use crate::transport::{Identity, Timeout};
@@ -25,14 +31,13 @@ pub trait Endpoint {
 ///
 /// 冻结字面量用 `&'static str`、选区用 [`Cow`]，所以两个 App 各自就是一个常量：
 /// [`LOGIN_APP`] / [`GAME_APP`]。换票是「从当前 App 换到新的 App」，两步各取对应
-/// App 的版本号；换票两步各取对应 App 的，见 `Suffix` 的 SSO 构造函数。
+/// App 的版本号，见 `Suffix` 的 SSO 构造函数。
 ///
-/// 字段全 `pub`，需要改口径时直接构造。自检（`login_suffix_param_order` 等）
-/// 断言的是 [`LOGIN_APP`] / [`App::game`] 口径。
+/// 没有 `app_site`：逆向 `SdoBaseClient.dll` 确认 `appIdSite` 与 `appId` 取同一处
+/// （模板里是两个 `%d`，但调用点推的是同一个字段），拼 query 时直接复用 `app_id`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
     pub app_id: &'static str,
-    pub app_site: &'static str,
     pub group: &'static str,
     /// 登录系模板的 `areaId`（固定 `1`）；游戏应用的选区由 [`App::game`] 填入。
     pub area_id: Cow<'static, str>,
@@ -42,10 +47,10 @@ pub struct App {
     pub product_version: &'static str,
 }
 
-/// 登录应用（QR/push/fast/附属请求）。
+/// 登录应用（QR/push/fast/附属请求）。版本取启动器 SDO 客户端版本
+/// （官方包 `Launcher3Modules/sdologin/version.txt`）。
 pub const LOGIN_APP: App = App {
     app_id: "791000814",
-    app_site: "791000814",
     group: "1",
     area_id: Cow::Borrowed("1"),
     scene: None,
@@ -54,13 +59,13 @@ pub const LOGIN_APP: App = App {
 
 /// 游戏应用（SSO 换票）。`area_id` 留空：选区是运行时值（来自区服表），
 /// 完整口径用 [`App::game`] 构造；两个 SSO 接口的 `appId` 都取它。
+/// 版本取游戏侧 SDO SDK 的 `Base version`（官方包 `sdo/sdologin/version.txt`）。
 pub const GAME_APP: App = App {
     app_id: "100001900",
-    app_site: "100001900",
     group: "-1",
     area_id: Cow::Borrowed(""),
     scene: Some("V3Launcher"),
-    product_version: "1.9.7.10",
+    product_version: "1.9.7.18",
 };
 
 impl App {
@@ -84,7 +89,6 @@ pub struct Suffix {
     pub area_id: String,
     /// `None` = 该模板不含 `groupId`（fastInLogin / getSystemConfig）。
     pub group_id: Option<String>,
-    pub app_id_site: String,
     pub device_id: String,
     pub mac_id: String,
     pub ep_ip: String,
@@ -109,7 +113,6 @@ impl Suffix {
             app_id: app.app_id.to_string(),
             area_id: app.area_id.to_string(),
             group_id: Some(app.group.to_string()),
-            app_id_site: app.app_site.to_string(),
             device_id: id.device_id.clone(),
             mac_id: id.mac_id.clone(),
             ep_ip: id.ep_ip.clone(),
@@ -144,7 +147,6 @@ impl Suffix {
             app_id: to.app_id.to_string(),
             area_id: to.area_id.to_string(),
             group_id: Some(to.group.to_string()),
-            app_id_site: to.app_site.to_string(),
             device_id: id.device_id.clone(),
             mac_id: id.mac_id.clone(),
             ep_ip: id.ep_ip.clone(),
@@ -181,8 +183,9 @@ impl Suffix {
             q.push_str("&groupId=");
             q.push_str(g);
         }
+        // `appIdSite` 与 `appId` 同值（见 `App` 的说明）。
         q.push_str("&appIdSite=");
-        q.push_str(&self.app_id_site);
+        q.push_str(&self.app_id);
         q.push_str("&locale=");
         q.push_str(LOCALE);
         q.push_str("&productId=");
@@ -350,19 +353,17 @@ impl Endpoint for CancelPush {
     }
 }
 
-/// `sendPushMessage.json`（`inputUserId` 按公共后缀编码规则编码）。
+/// `sendPushMessage.json`（`inputUserId` 按公共后缀编码规则编码；该请求**不带 `guid`**）。
 pub struct SendPush {
     suffix: Suffix,
     account: String,
-    guid: String,
 }
 
 impl SendPush {
-    pub fn new(suffix: Suffix, account: impl Into<String>, guid: impl Into<String>) -> SendPush {
+    pub fn new(suffix: Suffix, account: impl Into<String>) -> SendPush {
         SendPush {
             suffix,
             account: account.into(),
-            guid: guid.into(),
         }
     }
 }
@@ -372,9 +373,8 @@ impl Endpoint for SendPush {
     const TIMEOUT: Timeout = Timeout::Auth;
     fn path(&self) -> String {
         format!(
-            "/authen/sendPushMessage.json?inputUserId={}&scene=pc_pushmsglogin&guid={}&{}",
+            "/authen/sendPushMessage.json?inputUserId={}&scene=pc_pushmsglogin&{}",
             enc::url_encode(&self.account),
-            self.guid,
             self.suffix.to_query()
         )
     }
@@ -727,10 +727,11 @@ mod tests {
         assert!(CancelPush::new(s.clone(), "G1").path().starts_with(
             "/authen/cancelPushMessageLogin.json?pushMsgSessionKey=&guid=G1&authenSource=1&"
         ));
-        let send = SendPush::new(s.clone(), "user@example.com", "G1").path();
+        let send = SendPush::new(s.clone(), "user@example.com").path();
         assert!(send.starts_with(
-            "/authen/sendPushMessage.json?inputUserId=user%40example%2Ecom&scene=pc_pushmsglogin&guid=G1&authenSource=1&"
+            "/authen/sendPushMessage.json?inputUserId=user%40example%2Ecom&scene=pc_pushmsglogin&authenSource=1&"
         ), "{send}");
+        assert!(!send.contains("&guid="), "官方构造器不带 guid: {send}");
         let poll = PushLogin::new(s, "S1", "G1").path();
         assert!(poll.starts_with(
             "/authen/pushMessageLogin.json?pushMsgSessionKey=S1&guid=G1&autoLoginFlag=0&autoLoginKeepTime=0&keepLoginFlag=1&authenSource=1&"
@@ -755,7 +756,7 @@ mod tests {
 
         let s2 = Suffix::for_sso_login(&id(), RTID, &game_app());
         let p2 = SsoLogin::new(s2, "UA-123").path();
-        // `ssoAuthorizationLogin`：无 guid/tgt；epIp/runTimeId/channelId 值为空；版本 1.9.7.10
+        // `ssoAuthorizationLogin`：无 guid/tgt；epIp/runTimeId/channelId 值为空；版本 1.9.7.18
         assert!(
             p2.starts_with("/authen/ssoAuthorizationLogin?authorization=UA-123&authenSource=1&")
         );
@@ -766,7 +767,7 @@ mod tests {
             "{p2}"
         );
         assert!(
-            p2.contains("&runTimeId=&channelId=&productVersion=1%2E9%2E7%2E10&tag=0"),
+            p2.contains("&runTimeId=&channelId=&productVersion=1%2E9%2E7%2E18&tag=0"),
             "{p2}"
         );
         assert!(

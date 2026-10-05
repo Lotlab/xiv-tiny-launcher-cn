@@ -1,8 +1,9 @@
 //! 区服表策略（成功覆盖写本地备份，失败回退本地缓存）+ 选区交互
 //!（`--area` → 上次大区 → 数字菜单）。
 
-use proto::consts::FILE_SERVER;
 use proto::{log, paths};
+
+use crate::consts::FILE_SERVER;
 
 use sdo_client::server::{ServerTable, SubArea};
 use sdo_client::{Api, GAME_APP};

@@ -2,7 +2,9 @@
 
 use std::ffi::c_void;
 
-use proto::consts::{ENV_AREAID, ENV_BASE, ENV_SNDAID, ENV_TICKET, IID_INFO, IID_LOGIN};
+use proto::consts::{ENV_AREAID, ENV_BASE, ENV_SNDAID, ENV_TICKET};
+
+use crate::consts::{IID_INFO, IID_LOGIN};
 use proto::log;
 
 use crate::state;

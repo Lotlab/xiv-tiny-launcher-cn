@@ -5,6 +5,7 @@
 mod areas;
 mod cli;
 mod cmdline;
+mod consts;
 mod error;
 mod game;
 mod qr;
@@ -18,17 +19,16 @@ mod single;
 mod ui;
 mod winproc;
 
-use std::time::Duration;
-
 use clap::Parser;
 
-use proto::consts::*;
+use proto::consts::FILE_DEVICE;
 use proto::device::Device;
 use proto::enc;
 use proto::log;
 use proto::paths;
 
 use cli::Args;
+use consts::LOG_LAUNCHER;
 use error::{Error, Result};
 
 fn main() {
@@ -127,19 +127,20 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
 
     let mut flow = sdo_client::Flow::new(
         args.policy(),
+        args.method()?,
         sdo_client::LOGIN_APP,
         sdo_client::App::game(area.id.as_str()),
     );
     let mut session_ui = ui::TerminalUi::new(
         args.qr_render,
         args.qr_out.clone(),
-        args.keep_login_flag() == KEEP_LOGIN_FLAG_CHECKED,
+        args.keep_login(),
     );
     let outcome = flow.run(&mut api, &mut session_ui, device.keep_login_key.as_deref());
 
     // 无论成败：续登凭据的决定要落盘，后台附属请求要收尾。
     apply_keep_key(&mut device, flow.keep_key());
-    flow.wait_pending(Duration::from_millis(AUX_WAIT_BUDGET_MS));
+    flow.wait_pending();
 
     let game_ticket = match outcome {
         Ok(t) => t,

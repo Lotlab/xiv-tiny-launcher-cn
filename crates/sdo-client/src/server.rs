@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 
-use proto::consts::DEFAULT_LOBBY_PORT;
+use crate::consts::DEFAULT_LOBBY_PORT;
 
 use crate::error::{Error, Result};
 
