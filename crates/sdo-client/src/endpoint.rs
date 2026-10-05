@@ -146,6 +146,9 @@ impl Suffix {
     /// `ssoAuthorizationLogin` 后缀（换票第二步）：无 `guid/tgt`，`epIp/runTimeId/channelId` 值为空。
     ///
     /// 身份与 `productVersion` 都取换入的 App（`to`）—— 此时已经“就是”那个 App。
+    ///
+    /// 这一步在官方由**游戏侧** sdologin 发出，它的 `channelId` 键是 `[ChannelId] value`（不是
+    /// 启动器侧的 `[Skin] value`），缺键即空串 —— 官方包里没有该键，空值就是官方默认。
     pub fn for_sso_login(id: &Identity, run_time_id: &str, to: &App) -> Suffix {
         let mut s = Suffix::for_sso_authorization(id, run_time_id, to, to);
         s.ep_ip = String::new();

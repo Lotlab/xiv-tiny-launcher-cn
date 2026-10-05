@@ -30,6 +30,11 @@ pub(crate) const THIRD_LOGIN_EXTERN: &str = "0";
 
 /// 服务端要求的 `tag` 取值。
 pub(crate) const TAG: i32 = 0;
+/// 发行渠道。官方登录进程在 `CAuthenManager::Initialize` 里把它写进一个进程级全局
+/// （`SdoBaseClient.dll` 导出 87 第 26 参），三套模板都读那个全局；启动器链
+/// （`FFXIVBootV3`/`Launcher.dat`/`LauncherUpdater`）从不传它，注册表与命令行里也没有。
+/// 启动器侧 sdologin 取自 `<exe目录>\..\skintype.cfg` 的 `[Skin] value`，缺文件时默认 `"0"`；
+/// 官方包里没有该文件，所以发 `0` 与官方一致。
 pub(crate) const CHANNEL_ID: &str = "0";
 
 /// CAS 认证超时（连接超时与总超时相同）。
