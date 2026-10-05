@@ -741,7 +741,6 @@ dependencies = [
  "md-5",
  "serde",
  "serde_json",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

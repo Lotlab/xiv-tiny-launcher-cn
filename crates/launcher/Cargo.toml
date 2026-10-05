@@ -14,11 +14,12 @@ proto = { workspace = true }
 sdo-client = { workspace = true }
 clap = { workspace = true }
 png = { workspace = true }
+
+# 只有 Windows 侧模块（ui / qrwin32 / qrwindow）才用得到。
+[target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
-    "Win32_Security",
     "Win32_System_Threading",
-    "Win32_System_Environment",
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_System_StationsAndDesktops",

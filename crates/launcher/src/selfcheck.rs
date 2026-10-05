@@ -215,6 +215,13 @@ pub fn run(
         ),
     }
 
+    // 启动方式：非 Windows 平台得有兼容层才跑得起来。
+    match crate::winproc::resolve_launcher(args.run_via.as_deref()) {
+        Ok(None) => r.line("启动方式", Verdict::Pass, "直接运行 exe"),
+        Ok(Some(l)) => r.line("启动方式", Verdict::Pass, &format!("经兼容层：{l}")),
+        Err(e) => r.line("启动方式", Verdict::Fail, &e.replace('\n', " ")),
+    }
+
     // 回退路径
     let login_app = LoginApp::default();
     let id = sdo_client::Identity::from(device);

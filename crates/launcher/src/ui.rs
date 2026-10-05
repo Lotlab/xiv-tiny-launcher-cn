@@ -1,8 +1,25 @@
 //! 终端交互：按键、状态行、选区菜单。
+//!
+//! 除 `Keys` 外全部逻辑跨平台（`IsTerminal` + ANSI）。
+//! Windows 上用 `ReadConsoleInputW` 取单键，可以免回车按 k/q/Ctrl+C；
+//! 非 Windows 平台不做原始模式（那需要 termios），`Keys::poll` 恒返回 `None`：
+//! 扫码期间无法按 k 勾选保持登录、也无法用 Ctrl+C 换码
+//! （Ctrl+C 恢复系统默认行为：直接结束进程）。
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// 非 Windows 平台没有按键来源，三个变体不会被构造（但仍会被 login 匹配）。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub enum Key {
+    KeepLogin,
+    CancelCode,
+    Quit,
+}
+
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
 use windows_sys::Win32::System::Console::{
     GetConsoleMode, GetConsoleScreenBufferInfo, GetNumberOfConsoleInputEvents, GetStdHandle,
     ReadConsoleInputW, SetConsoleMode, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT,
@@ -10,19 +27,14 @@ use windows_sys::Win32::System::Console::{
     KEY_EVENT, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Key {
-    KeepLogin,
-    CancelCode,
-    Quit,
-}
-
+#[cfg(windows)]
 pub struct Keys {
     handle: HANDLE,
     orig_mode: u32,
     console: bool,
 }
 
+#[cfg(windows)]
 impl Keys {
     pub fn new() -> Keys {
         unsafe {
@@ -89,6 +101,7 @@ impl Keys {
     }
 }
 
+#[cfg(windows)]
 impl Drop for Keys {
     fn drop(&mut self) {
         if self.console {
@@ -99,19 +112,32 @@ impl Drop for Keys {
     }
 }
 
-/// stdout 是否连接到控制台。
-pub fn has_console_out() -> bool {
-    unsafe {
-        let h = GetStdHandle(STD_OUTPUT_HANDLE);
-        if h.is_null() || h == INVALID_HANDLE_VALUE {
-            return false;
-        }
-        let mut mode: u32 = 0;
-        GetConsoleMode(h, &mut mode) != 0
+/// 非 Windows：不做原始模式，因此没有免回车的单键交互。
+#[cfg(not(windows))]
+#[derive(Default)]
+pub struct Keys;
+
+#[cfg(not(windows))]
+impl Keys {
+    pub fn new() -> Keys {
+        Keys
+    }
+
+    /// 恒为 `None`：没有按键来源，登录流程只按倒计时 / 轮询次数推进。
+    pub fn poll(&self) -> Option<Key> {
+        None
     }
 }
 
+/// stdout 是否连接到终端（重定向时为 false）。
+pub fn has_console_out() -> bool {
+    std::io::stdout().is_terminal()
+}
+
 /// 打开 stdout 的 VT 序列处理。
+///
+/// Windows 需要显式打开 `ENABLE_VIRTUAL_TERMINAL_PROCESSING`；Unix 终端原生支持。
+#[cfg(windows)]
 pub fn enable_vt() {
     unsafe {
         let h = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -128,7 +154,11 @@ pub fn enable_vt() {
     }
 }
 
-/// 控制台可见列数（拿不到返回 None）。
+#[cfg(not(windows))]
+pub fn enable_vt() {}
+
+/// 终端可见列数。
+#[cfg(windows)]
 pub fn console_width() -> Option<usize> {
     unsafe {
         let h = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -146,6 +176,17 @@ pub fn console_width() -> Option<usize> {
             None
         }
     }
+}
+
+/// 非 Windows：只能看 `COLUMNS`（交互式 shell 通常设了，但不保证导出），
+/// 取不到就返回 `None`，由调用方兜底（二维码排版用 100 列）。
+#[cfg(not(windows))]
+pub fn console_width() -> Option<usize> {
+    std::env::var("COLUMNS")
+        .ok()?
+        .parse::<usize>()
+        .ok()
+        .filter(|w| *w > 0)
 }
 
 /// 是否用 ANSI 彩色渲染：控制台默认开；重定向时可用 `SDO_FFXIV_FORCE_COLOR=1` 强制

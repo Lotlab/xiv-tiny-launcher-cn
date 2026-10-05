@@ -10,9 +10,3 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 md-5 = { workspace = true }
 getrandom = { workspace = true }
-windows-sys = { workspace = true, features = [
-    "Win32_Foundation",
-    "Win32_System_SystemInformation",
-    "Win32_NetworkManagement_IpHelper",
-    "Win32_Networking_WinSock",
-] }

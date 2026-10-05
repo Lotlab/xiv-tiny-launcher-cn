@@ -1,5 +1,8 @@
 //! `sdologinentry64.dll` — 游戏侧 64 位替代 DLL，只读本地交接返回票据与命令行。
-
+//!
+//! 这个 crate 只能是 Windows 产物（PE 导出 + COM vtable + `oleaut32`）。
+//! 在非 Windows 平台整体编译为空，`cargo test --workspace` 不会因此失败。
+#![cfg(windows)]
 #![allow(non_snake_case)]
 
 mod state;

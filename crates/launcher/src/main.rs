@@ -12,13 +12,14 @@ mod game;
 mod login;
 mod qr;
 mod qrimage;
+/// 原生二维码窗口只在 Windows 上有实现（见 `qrwindow`）。
+#[cfg(windows)]
 mod qrwin32;
 mod qrwindow;
 mod selfcheck;
 mod single;
 mod ui;
 mod winproc;
-mod winstr;
 
 use clap::Parser;
 
@@ -29,7 +30,7 @@ use proto::log;
 use proto::paths;
 
 use cli::Args;
-use ctx::{Ctx, GameTicket};
+use ctx::Ctx;
 use error::{Error, Result};
 
 fn main() {
@@ -62,8 +63,12 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         single::Acquire::AlreadyRunning => {
             return Err(Error::msg("已有实例在运行，本次退出"))
         }
-        single::Acquire::Failed(code) => {
-            return Err(Error::msg(format!("启动失败，请重试（错误码 {code}）")))
+        single::Acquire::Failed(e) => {
+            let path = paths::lock_file();
+            return Err(Error::msg(format!(
+                "无法获取单实例锁（{}）：{e}",
+                path.display()
+            )));
         }
     };
 
@@ -102,6 +107,12 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     println!("游戏目录：{}", game.game_dir.display());
 
     game::verify_login_dll(&game.game_dir, args.skip_dll_check).map_err(Error::msg)?;
+
+    // 尽早解析启动方式：缺兼容层时不必等扫码完再失败。
+    let launcher = winproc::resolve_launcher(args.run_via.as_deref()).map_err(Error::msg)?;
+    if let Some(l) = &launcher {
+        println!("通过兼容层启动游戏：{l}");
+    }
 
     let net = sdo_client::Client::new(
         sdo_client::Identity::from(&device),
@@ -156,14 +167,16 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     net.check_face_verify(&login_ticket.tgt)
         .map_err(Error::msg)?;
 
-    std::env::set_var(ENV_TICKET, &game_ticket.ticket);
-    std::env::set_var(ENV_SNDAID, &game_ticket.snda_id);
-    std::env::set_var(ENV_AREAID, &area.id);
-    std::env::set_var(ENV_BASE, &base);
+    // 票据与大区参数直接交给子进程的环境块（游戏侧 DLL 只读），不再改本进程环境。
+    let delivery = winproc::Delivery {
+        ticket: &game_ticket.ticket,
+        snda_id: &game_ticket.snda_id,
+        area_id: &area.id,
+        base: &base,
+    };
 
-    assert_delivery(&game_ticket, &area.id, &base)?;
-
-    let child = winproc::launch(&game.exe, &game.game_dir, &base).map_err(Error::msg)?;
+    let mut child = winproc::launch(&game.exe, &game.game_dir, &delivery, launcher.as_ref())
+        .map_err(Error::msg)?;
     println!("游戏已启动。");
 
     // 启动成功才记住大区。
@@ -176,30 +189,8 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
 
     if args.stay {
         println!("等待游戏退出…");
-        child.wait();
+        let _ = child.wait();
         println!("游戏已退出。");
-    }
-    Ok(())
-}
-
-/// 校验刚写入环境的票据与大区参数和内存值一致，不一致返回用户可读错误。
-fn assert_delivery(deliver: &GameTicket, area_id: &str, base: &str) -> Result<()> {
-    let env_ticket = std::env::var(ENV_TICKET).unwrap_or_default();
-    let env_snda = std::env::var(ENV_SNDAID).unwrap_or_default();
-    let env_area = std::env::var(ENV_AREAID).unwrap_or_default();
-    let env_base = std::env::var(ENV_BASE).unwrap_or_default();
-
-    if env_ticket.is_empty() || env_snda.is_empty() {
-        return Err(Error::msg("票据异常：请重试"));
-    }
-    if env_ticket != deliver.ticket || env_snda != deliver.snda_id {
-        return Err(Error::msg("票据异常：请重试"));
-    }
-    if env_area != area_id || !base.contains(&format!("-AreaID={area_id} ")) {
-        return Err(Error::msg("大区参数不一致，请重试"));
-    }
-    if env_base != base {
-        return Err(Error::msg("启动参数不一致，请重试"));
     }
     Ok(())
 }

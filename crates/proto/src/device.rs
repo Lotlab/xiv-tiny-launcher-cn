@@ -195,18 +195,28 @@ pub(crate) fn generate_ep_name() -> String {
     s
 }
 
-/// 虚拟单播 MAC：优先取本机网卡 OUI 号段 + 3 字节随机；首字节最低位清零。
+/// 常见桌面/笔记本网卡厂商的 OUI（前三字节）。
+///
+/// 只用真实号段是为了让 macId 看起来像真机，不含任何本机信息：后三字节全部随机，
+/// 因此不会与真实设备重号。全线满足首字节最低位 0（单播）、次低位 0（非本地管理）。
+const COMMON_OUI: [[u8; 3]; 8] = [
+    [0x00, 0x1B, 0x21], // Intel
+    [0x3C, 0x97, 0x0E], // Intel
+    [0x00, 0xE0, 0x4C], // Realtek
+    [0x00, 0x14, 0x22], // Dell
+    [0xB8, 0x2A, 0x72], // Dell
+    [0x1C, 0x1B, 0x0D], // Gigabyte
+    [0x00, 0x16, 0x17], // MSI
+    [0x2C, 0x56, 0xDC], // ASUS
+];
+
+/// 虚拟单播 MAC：随机挑一个常见厂商 OUI + 3 字节随机；首字节最低位清零。
 pub(crate) fn generate_mac_id() -> String {
     let mut b = [0u8; 6];
-    match adapters::first_oui() {
-        Some(oui) => b[..3].copy_from_slice(&oui),
-        None => {
-            let mut oui = [0u8; 3];
-            let _ = getrandom::fill(&mut oui);
-            oui[0] &= 0xFE;
-            b[..3].copy_from_slice(&oui);
-        }
-    }
+    // 取随机数失败时退化为表内第一项，不引入错误路径。
+    let mut pick = [0u8; 1];
+    let _ = getrandom::fill(&mut pick);
+    b[..3].copy_from_slice(&COMMON_OUI[pick[0] as usize % COMMON_OUI.len()]);
     let mut rest = [0u8; 3];
     let _ = getrandom::fill(&mut rest);
     b[3..].copy_from_slice(&rest);
@@ -252,121 +262,39 @@ pub(crate) fn is_private_v4(s: &str) -> bool {
     }
 }
 
-/// 首个私网 IPv4：优先网卡枚举，其次 UDP 路由探测。
+/// 首个私网 IPv4：UDP 路由探测（`connect` 只设置路由选用哪个本地地址，不实际发包，
+/// 因此离线也能用）。
+///
+/// 只反映"默认路由出口"那一张网卡：多网卡（VPN / docker 网桥 / 主路由走公网、私网在
+/// 第二张网卡）机器上可能选不中期望的地址。可用 `--ep-ip` 手工覆盖。
 pub(crate) fn local_private_ipv4() -> Option<String> {
-    if let Some(ip) = adapters::first_private_ipv4() {
-        return Some(ip);
-    }
-    // 兜底：不实际发包，仅取路由选中的本地地址。
-    if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        if sock.connect("114.114.114.114:53").is_ok() {
-            if let Ok(addr) = sock.local_addr() {
-                let ip = addr.ip().to_string();
-                if is_private_v4(&ip) {
-                    return Some(ip);
-                }
-            }
-        }
-    }
-    None
-}
-
-mod adapters {
-    use windows_sys::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
-    use windows_sys::Win32::NetworkManagement::IpHelper::{GetAdaptersInfo, IP_ADAPTER_INFO};
-
-    pub struct Adapter {
-        pub mac: Vec<u8>,
-        pub if_type: u32,
-        pub ips: Vec<String>,
-    }
-
-    /// `GetAdaptersInfo`（iphlpapi）枚举，输出缓冲区按 8 字节对齐。
-    pub fn enumerate() -> Vec<Adapter> {
-        let mut size: u32 = 16 * 1024;
-        let mut words = vec![0u64; (size as usize).div_ceil(8)];
-        let mut ret =
-            unsafe { GetAdaptersInfo(words.as_mut_ptr() as *mut IP_ADAPTER_INFO, &mut size) };
-        if ret == ERROR_BUFFER_OVERFLOW {
-            words = vec![0u64; (size as usize).div_ceil(8)];
-            ret = unsafe { GetAdaptersInfo(words.as_mut_ptr() as *mut IP_ADAPTER_INFO, &mut size) };
-        }
-        if ret != 0 {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
-        let mut p = words.as_ptr() as *const IP_ADAPTER_INFO;
-        let mut guard = 0;
-        while !p.is_null() && guard < 256 {
-            guard += 1;
-            let a = unsafe { &*p };
-            let n = (a.AddressLength as usize).min(a.Address.len());
-            let mut ips = Vec::new();
-            let mut ip_node: *const windows_sys::Win32::NetworkManagement::IpHelper::IP_ADDR_STRING =
-                &a.IpAddressList;
-            let mut ip_guard = 0;
-            while !ip_node.is_null() && ip_guard < 64 {
-                ip_guard += 1;
-                let node = unsafe { &*ip_node };
-                if let Some(s) = cstr_i8(&node.IpAddress.String) {
-                    if !s.is_empty() {
-                        ips.push(s);
-                    }
-                }
-                ip_node = node.Next;
-            }
-            out.push(Adapter {
-                mac: a.Address[..n].to_vec(),
-                if_type: a.Type,
-                ips,
-            });
-            p = a.Next;
-        }
-        out
-    }
-
-    fn cstr_i8(buf: &[i8]) -> Option<String> {
-        let bytes: Vec<u8> = buf
-            .iter()
-            .take_while(|c| **c != 0)
-            .map(|c| *c as u8)
-            .collect();
-        String::from_utf8(bytes).ok()
-    }
-
-    const IF_TYPE_ETHERNET: u32 = 6;
-    const IF_TYPE_IEEE80211: u32 = 71;
-
-    /// 本机真实网卡的前三字节（OUI 号段）。
-    pub fn first_oui() -> Option<[u8; 3]> {
-        for a in enumerate() {
-            let physical = a.if_type == IF_TYPE_ETHERNET || a.if_type == IF_TYPE_IEEE80211;
-            if physical && a.mac.len() == 6 && a.mac.iter().any(|b| *b != 0) && a.mac[0] & 1 == 0 {
-                return Some([a.mac[0], a.mac[1], a.mac[2]]);
-            }
-        }
-        None
-    }
-
-    pub fn first_private_ipv4() -> Option<String> {
-        // 先看有实体网卡的适配器，再看其余。
-        let mut candidates: Vec<(bool, String)> = Vec::new();
-        for a in enumerate() {
-            let physical = a.if_type == IF_TYPE_ETHERNET || a.if_type == IF_TYPE_IEEE80211;
-            for ip in a.ips {
-                if super::is_private_v4(&ip) {
-                    candidates.push((physical, ip));
-                }
-            }
-        }
-        candidates.sort_by_key(|(physical, _)| !*physical);
-        candidates.into_iter().next().map(|(_, ip)| ip)
-    }
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("114.114.114.114:53").ok()?;
+    let ip = sock.local_addr().ok()?.ip().to_string();
+    is_private_v4(&ip).then_some(ip)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oui_table_is_unicast_non_local() {
+        for oui in COMMON_OUI {
+            assert_eq!(
+                oui[0] & 0b11,
+                0,
+                "OUI {oui:02X?} 必须是单播且非本地管理地址"
+            );
+        }
+        // 生成的号码必须落在表内某个号段上（否则说明挑选逻辑没生效）。
+        let mac = generate_mac_id();
+        let prefix = &mac[..8];
+        let hit = COMMON_OUI
+            .iter()
+            .any(|o| format!("{:02X}-{:02X}-{:02X}", o[0], o[1], o[2]) == prefix);
+        assert!(hit, "mac={mac} 的前三字节不在 COMMON_OUI 表内");
+    }
 
     #[test]
     fn mac_and_device_id_rules() {

@@ -12,6 +12,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 proto = { workspace = true }
+
+# DLL 本身只能是 Windows 产物（PE + COM vtable）；非 Windows 平台下这个 crate 编译为空。
+[target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_Environment",

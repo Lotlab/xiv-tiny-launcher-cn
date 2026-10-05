@@ -35,6 +35,21 @@ pub fn log_file_candidates(name: &str) -> Vec<PathBuf> {
     v
 }
 
+/// 单实例锁文件路径：优先 `$XDG_RUNTIME_DIR`（Linux 下是每用户 0700 的私有目录），
+/// 否则退到临时目录（Windows 的 `%TEMP%` 本身就是每用户的）。
+///
+/// 锁本身由 `std::fs::File::try_lock` 持有，进程退出（含崩溃）即释放；
+/// 文件只作句柄载体，内容无意义。
+pub fn lock_file() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let dir = PathBuf::from(dir);
+        if dir.is_dir() {
+            return dir.join(crate::consts::LOCK_FILE_NAME);
+        }
+    }
+    std::env::temp_dir().join(crate::consts::LOCK_FILE_NAME)
+}
+
 /// 原子写：写 `*.tmp` 后改名（Windows 上 `rename` 可覆盖已存在目标）。
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = {

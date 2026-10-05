@@ -85,7 +85,8 @@ pub const FILE_QRCODE: &str = "qrcode.png";
 pub const LOG_DIR_NAME: &str = "SdoFfxiv";
 pub const LOG_LAUNCHER: &str = "launcher.log";
 pub const LOG_DLL: &str = "sdologinentry.log";
-pub const MUTEX_NAME: &str = r"Local\SdoFfxivMutex";
+/// 单实例锁文件名（放在每用户私有目录；见 `paths::lock_file`）。
+pub const LOCK_FILE_NAME: &str = "SdoFfxiv.lock";
 
 // 游戏侧。
 pub const GAME_SUBDIR: &str = "game";

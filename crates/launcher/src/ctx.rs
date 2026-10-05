@@ -6,7 +6,7 @@ use proto::device::Device;
 
 use crate::cli::Args;
 
-pub use sdo_client::{GameTicket, LoginTicket};
+pub use sdo_client::LoginTicket;
 
 pub struct Ctx {
     pub device: Device,

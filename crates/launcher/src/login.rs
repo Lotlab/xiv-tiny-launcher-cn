@@ -107,7 +107,10 @@ pub fn qr_login(ctx: &mut Ctx, keep_flag: i32, net: &Client) -> Result<LoginTick
             match crate::qrwindow::show(&png) {
                 Ok(w) => window = Some(w),
                 Err(reason) => {
-                    log::debug(&format!("二维码窗口不可用：{reason}"));
+                    log::debug(&format!(
+                        "二维码窗口不可用：{reason}（{}）",
+                        crate::qrwindow::environment_facts()
+                    ));
                 }
             }
         }

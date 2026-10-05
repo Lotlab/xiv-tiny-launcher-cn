@@ -1,4 +1,7 @@
 //! 二维码窗口显示（失败时由调用方回退终端渲染）。
+//!
+//! 原生窗口只有 Windows 实现；其他平台上 `show` 固定返回 `Err`，
+//! 调用方（`login`）会自动回退到终端二维码。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,6 +33,7 @@ impl Drop for NativeWindow {
 }
 
 /// 显示 `png`，失败返回原因。
+#[cfg(windows)]
 pub fn show(png: &[u8]) -> Result<NativeWindow, String> {
     if std::env::var_os("SDO_FFXIV_NO_WINDOW").is_some() {
         return Err("已按设置跳过图形窗口，改用终端二维码".to_string());
@@ -46,7 +50,14 @@ pub fn show(png: &[u8]) -> Result<NativeWindow, String> {
     })
 }
 
-/// 弹窗失败时的诊断信息。
+/// 非 Windows 平台没有原生窗口：固定失败，由调用方回退终端渲染。
+#[cfg(not(windows))]
+pub fn show(_png: &[u8]) -> Result<NativeWindow, String> {
+    Err("当前平台没有原生二维码窗口，改用终端二维码".to_string())
+}
+
+/// 弹窗失败时的诊断信息（仅 Windows 有意义）。
+#[cfg(windows)]
 pub fn environment_facts() -> String {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -96,11 +107,19 @@ pub fn environment_facts() -> String {
     facts.join(" ")
 }
 
+/// 非 Windows 平台没有 window station / desktop 概念。
+#[cfg(not(windows))]
+pub fn environment_facts() -> String {
+    "本平台没有原生二维码窗口实现".to_string()
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use super::*;
 
-    /// 诊断字段均非空。
+    /// 诊断字段均非空（仅 Windows 有 window station / desktop）。
+    #[cfg(windows)]
     #[test]
     fn environment_facts_are_populated() {
         let f = environment_facts();

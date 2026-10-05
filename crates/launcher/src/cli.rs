@@ -66,6 +66,12 @@ pub struct Args {
     #[arg(long, action = ArgAction::SetTrue)]
     pub stay: bool,
 
+    /// 用哪个命令启动游戏（非 Windows 平台缺省自动探测 wine / umu-run）
+    ///
+    /// 例：--run-via "flatpak run org.winehq.Wine"；也可用环境变量 SDO_FFXIV_RUN_VIA
+    #[arg(long = "run-via", value_name = "cmd")]
+    pub run_via: Option<String>,
+
     /// 手动指定本机 IP（默认自动获取）
     #[arg(long, value_name = "ip")]
     pub ep_ip: Option<String>,
