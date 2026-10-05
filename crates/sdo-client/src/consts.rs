@@ -63,4 +63,5 @@ pub const MAX_LOGIN_ROUNDS: u32 = 3;
 /// 退出前等待后台附属请求的总预算。
 pub const AUX_WAIT_BUDGET_MS: u64 = 1500;
 pub const PUSH_SEND_MAX_TRIES: u32 = 3;
-pub const PUSH_SEND_RETRY_WAIT_MS: u64 = 1000;
+/// 手机推送发送失败后的重试间隔：官方客户端至少 5 秒。
+pub const PUSH_SEND_RETRY_WAIT_MS: u64 = 5000;

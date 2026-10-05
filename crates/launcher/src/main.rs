@@ -104,6 +104,16 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     let game = game.map_err(Error::msg)?;
     println!("游戏目录：{}", game.game_dir.display());
 
+    // 手机确认账号：`--account` 优先，否则用上次记住的。放在这里是为了在触网前就报错。
+    let stored_account = device.last_account.clone();
+    let account = args.account_or(stored_account.as_deref());
+    // auto 的回退链来自上次成功的那条；`--mode qr`/`push` 时这个值不用。
+    let last_chain = sdo_client::Chain::from_tag(
+        device.last_login_method.as_deref().unwrap_or_default(),
+        account.clone(),
+    );
+    let method = args.method(last_chain, stored_account.as_deref())?;
+
     game::verify_login_dll(&game.game_dir, args.skip_dll_check).map_err(Error::msg)?;
 
     // 尽早解析启动方式：缺兼容层时不必等扫码完再失败。
@@ -127,7 +137,7 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
 
     let mut flow = sdo_client::Flow::new(
         args.policy(),
-        args.method()?,
+        method,
         sdo_client::LOGIN_APP,
         sdo_client::App::game(area.id),
     );
@@ -166,6 +176,23 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         match device.set_last_area_id(&area_id_text, &paths::cwd_file(FILE_DEVICE)) {
             Ok(()) => println!("已记住大区 {}，下次默认使用", area.name),
             Err(e) => log::info(&format!("写 lastAreaId 失败（不影响启动）：{e}")),
+        }
+    }
+
+    // 同样只在启动成功后才记：下次 auto 的续登凭据失败时回退到这条链、用这个账号。
+    if let Some(chain) = flow.chain_used() {
+        let path = paths::cwd_file(FILE_DEVICE);
+        if device.last_login_method.as_deref() != Some(chain.tag()) {
+            if let Err(e) = device.set_last_login_method(chain.tag(), &path) {
+                log::info(&format!("写 lastLoginMethod 失败（不影响启动）：{e}"));
+            }
+        }
+        if let Some(a) = account.as_deref().filter(|a| !a.trim().is_empty()) {
+            if device.last_account.as_deref() != Some(a) {
+                if let Err(e) = device.set_last_account(a, &path) {
+                    log::info(&format!("写 lastAccount 失败（不影响启动）：{e}"));
+                }
+            }
         }
     }
 

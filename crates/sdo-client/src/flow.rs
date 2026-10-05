@@ -15,15 +15,38 @@ use crate::error::{Error, Kind, Result};
 use crate::tickets::GameTicket;
 use crate::ui::{Action, Note, Phase, Ui, Wait};
 
-/// 用哪条登录链。账号是 push 链的必要输入，所以跟模式放在一起。
+/// 一条交互式登录链。账号是 push 链的必要输入，所以跟它放在一起。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Method {
-    /// 二维码扫码。
+pub enum Chain {
     Qr,
-    /// 手机 App 确认。
     Push { account: String },
-    /// 有续登凭据就先试自动登录，失败回二维码。
-    Auto,
+}
+
+impl Chain {
+    /// 落盘标签（`device.json` 的 `lastLoginMethod`）。
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Chain::Qr => "qr",
+            Chain::Push { .. } => "push",
+        }
+    }
+
+    /// 从落盘标签还原；`push` 没有账号时退回二维码。
+    pub fn from_tag(tag: &str, account: Option<String>) -> Chain {
+        match (tag.trim(), account) {
+            ("push", Some(a)) if !a.trim().is_empty() => Chain::Push { account: a },
+            _ => Chain::Qr,
+        }
+    }
+}
+
+/// 本次会话怎么登录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Method {
+    /// 交互链；`fast` 失败后走它，手机链自身失败还会再回退二维码。
+    pub chain: Chain,
+    /// 是否先用 `device.json` 里的续登凭据试一次（`--mode auto`）。
+    pub fast: bool,
 }
 
 /// 对 `device.json` 里 `keepLoginKey` 的处理决定。落盘由 EXE 做。
@@ -76,7 +99,7 @@ impl Default for Policy {
 /// FFXIV 启动器的流程。
 pub struct Flow {
     policy: Policy,
-    /// 用哪条登录链。
+    /// 怎么登录。
     method: Method,
     /// 登录链的应用口径（"当前 App"）。
     app: App,
@@ -85,6 +108,8 @@ pub struct Flow {
     /// 后台附属请求的句柄；退出前统一等一等。
     pending: Vec<JoinHandle<()>>,
     keep_key: KeepKey,
+    /// 本次实际完成登录的链（`run` 返回 `Ok` 后为 `Some`）。
+    chain_used: Option<Chain>,
 }
 
 impl Flow {
@@ -97,12 +122,18 @@ impl Flow {
             target,
             pending: Vec::new(),
             keep_key: KeepKey::Keep,
+            chain_used: None,
         }
     }
 
     /// `run` 返回后读；成功失败都要落盘。
     pub fn keep_key(&self) -> &KeepKey {
         &self.keep_key
+    }
+
+    /// 本次完成登录的那条链；`run` 返回 `Ok` 后为 `Some`，EXE 据此记下"上次用的方式"。
+    pub fn chain_used(&self) -> Option<&Chain> {
+        self.chain_used.as_ref()
     }
 
     /// 一次完整会话：登录 → 换票（失败回登录）→ 登录后附属请求 → 人脸验证。
@@ -114,6 +145,7 @@ impl Flow {
         stored_keep_key: Option<&str>,
     ) -> Result<GameTicket> {
         self.keep_key = KeepKey::Keep;
+        self.chain_used = None;
         self.pre_login(api);
 
         let mut round = 0u32;
@@ -173,25 +205,8 @@ impl Flow {
 
     /// 按模式选登录链；手机链失败回退二维码。
     fn login(&mut self, api: &mut Api, ui: &mut dyn Ui, stored_keep_key: Option<&str>) -> Result<()> {
-        match self.method.clone() {
-            Method::Qr => self.login_qr(api, ui),
-            Method::Push { account } => {
-                match self.login_push(api, ui, &account) {
-                    Ok(()) => Ok(()),
-                    Err(e) if e.is_quit() => Err(e),
-                    Err(e) => {
-                        log::warn(&format!(
-                            "手机登录不可用（{}），转为二维码登录",
-                            e.log_text()
-                        ));
-                        self.login_qr(api, ui)
-                    }
-                }
-            }
-            Method::Auto => {
-                let Some(key) = stored_keep_key else {
-                    return self.login_qr(api, ui);
-                };
+        if self.method.fast {
+            if let Some(key) = stored_keep_key {
                 match api.fast_in_login(&self.app, key) {
                     Ok(FastLogin::Ok) => {
                         // 响应没带 guid 时补一次 getGuid（这是流程，不是接口）。
@@ -199,22 +214,47 @@ impl Flow {
                             api.get_guid(&self.app)?;
                         }
                         self.absorb_keep_key(api);
-                        Ok(())
+                        return Ok(());
                     }
                     Ok(FastLogin::Rejected(reason)) => {
-                        log::warn(&format!(
-                            "自动登录被拒绝（{reason}），清除本地登录信息并转二维码"
-                        ));
+                        log::warn(&format!("自动登录被拒绝（{reason}），清除本地登录信息"));
                         self.keep_key = KeepKey::Clear;
-                        self.login_qr(api, ui)
                     }
                     Err(e) => {
                         // 传输/HTTP/解析失败：key 可能仍然有效，保留。
-                        log::warn(&format!("自动登录失败（{}），转为二维码登录", e.log_text()));
-                        self.login_qr(api, ui)
+                        log::warn(&format!("自动登录失败（{}）", e.log_text()));
                     }
                 }
             }
+        }
+        let chain = self.method.chain.clone();
+        self.login_chain(&chain, api, ui)
+    }
+
+    /// 走一条交互链；手机链失败回退二维码，并记下最终用的是哪条。
+    fn login_chain(&mut self, chain: &Chain, api: &mut Api, ui: &mut dyn Ui) -> Result<()> {
+        match chain {
+            Chain::Qr => {
+                self.login_qr(api, ui)?;
+                self.chain_used = Some(Chain::Qr);
+                Ok(())
+            }
+            Chain::Push { account } => match self.login_push(api, ui, account) {
+                Ok(()) => {
+                    self.chain_used = Some(chain.clone());
+                    Ok(())
+                }
+                Err(e) if e.is_quit() => Err(e),
+                Err(e) => {
+                    log::warn(&format!(
+                        "手机登录不可用（{}），转为二维码登录",
+                        e.log_text()
+                    ));
+                    self.login_qr(api, ui)?;
+                    self.chain_used = Some(Chain::Qr);
+                    Ok(())
+                }
+            },
         }
     }
 

@@ -23,6 +23,10 @@ pub struct Device {
     pub keep_login_key: Option<String>,
     /// 上次成功启动游戏所用的大区 id；`--area` 未指定时作为默认值（无则进菜单）。
     pub last_area_id: Option<String>,
+    /// 上次成功登录用的链（`"qr"` / `"push"`）；auto 的续登凭据失败后回退到它。
+    pub last_login_method: Option<String>,
+    /// 上次用的手机确认账号；`--account` 缺省时用它，否则 auto 回退不到手机链。
+    pub last_account: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,6 +44,12 @@ struct DeviceFile {
     /// 本实现的扩展字段：记住上次成功登录的大区。
     #[serde(rename = "lastAreaId", default)]
     last_area_id: String,
+    /// 本实现的扩展字段：记住上次成功登录用的链。
+    #[serde(rename = "lastLoginMethod", default)]
+    last_login_method: String,
+    /// 本实现的扩展字段：记住上次用的手机确认账号。
+    #[serde(rename = "lastAccount", default)]
+    last_account: String,
 }
 
 impl Device {
@@ -54,6 +64,8 @@ impl Device {
             ep_ip,
             keep_login_key: None,
             last_area_id: None,
+            last_login_method: None,
+            last_account: None,
         })
     }
 
@@ -80,6 +92,8 @@ impl Device {
             ep_ip: f.ep_ip,
             keep_login_key: normalize_key(&f.keep_login_key),
             last_area_id: normalize_area_id(&f.last_area_id),
+            last_login_method: normalize_trimmed(&f.last_login_method),
+            last_account: normalize_trimmed(&f.last_account),
         })
     }
 
@@ -117,6 +131,8 @@ impl Device {
         }
         self.keep_login_key = self.keep_login_key.as_deref().and_then(normalize_key);
         self.last_area_id = self.last_area_id.as_deref().and_then(normalize_area_id);
+        self.last_login_method = self.last_login_method.as_deref().and_then(normalize_trimmed);
+        self.last_account = self.last_account.as_deref().and_then(normalize_trimmed);
         Ok(())
     }
 
@@ -129,6 +145,8 @@ impl Device {
             ep_ip: self.ep_ip.clone(),
             keep_login_key: self.keep_login_key.clone().unwrap_or_default(),
             last_area_id: self.last_area_id.clone().unwrap_or_default(),
+            last_login_method: self.last_login_method.clone().unwrap_or_default(),
+            last_account: self.last_account.clone().unwrap_or_default(),
         };
         let text = serde_json::to_string_pretty(&f).unwrap_or_else(|_| "{}".to_string());
         paths::write_atomic(path, text.as_bytes())
@@ -153,9 +171,35 @@ impl Device {
         self.last_area_id = normalize_area_id(area_id);
         self.save_atomic(path)
     }
+
+    /// 记住上次成功登录用的链（未知标签交给调用方 `Chain::from_tag` 兜底）。
+    pub fn set_last_login_method(
+        &mut self,
+        tag: &str,
+        path: &std::path::Path,
+    ) -> std::io::Result<()> {
+        self.last_login_method = normalize_trimmed(tag);
+        self.save_atomic(path)
+    }
+
+    /// 记住这次用的手机确认账号。
+    pub fn set_last_account(&mut self, account: &str, path: &std::path::Path) -> std::io::Result<()> {
+        self.last_account = normalize_trimmed(account);
+        self.save_atomic(path)
+    }
 }
 
 /// 大区 id 只接受十进制数字串（避免把脏数据写进 device.json）。
+/// 去掉首尾空白，非空即保留。
+fn normalize_trimmed(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
 fn normalize_area_id(raw: &str) -> Option<String> {
     let t = raw.trim();
     if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) {
@@ -320,6 +364,8 @@ mod tests {
                 ep_ip: "192.168.1.2".into(),
                 keep_login_key: None,
                 last_area_id: None,
+                last_login_method: None,
+                last_account: None,
             };
             assert!(d.seg0_consistent());
             d.segments()
@@ -365,6 +411,8 @@ mod tests {
             ep_ip: "192.168.0.9".into(),
             keep_login_key: None,
             last_area_id: None,
+            last_login_method: None,
+            last_account: None,
         };
         d.repair().unwrap();
         d.save_atomic(&path).unwrap();
@@ -378,8 +426,12 @@ mod tests {
         assert!(back.seg0_consistent());
         // 记住上次大区：写盘后重新读回
         d.set_last_area_id("7", &path).unwrap();
+        d.set_last_login_method("push", &path).unwrap();
+        d.set_last_account("a@b.c", &path).unwrap();
         let back2 = Device::load_from(&path).unwrap();
         assert_eq!(back2.last_area_id.as_deref(), Some("7"));
+        assert_eq!(back2.last_login_method.as_deref(), Some("push"));
+        assert_eq!(back2.last_account.as_deref(), Some("a@b.c"));
         // 脏数据不接受
         d.set_last_area_id("abc", &path).unwrap();
         assert_eq!(d.last_area_id, None, "非数字大区 id 必须被拒绝");

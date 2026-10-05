@@ -105,19 +105,36 @@ pub struct Args {
 }
 
 impl Args {
-    /// 用哪条登录链；`--mode push` 缺账号在这里报错。
-    pub fn method(&self) -> Result<sdo_client::Method, String> {
-        Ok(match self.mode {
-            Mode::Qr => sdo_client::Method::Qr,
-            Mode::Auto => sdo_client::Method::Auto,
-            Mode::Push => sdo_client::Method::Push {
-                account: self
-                    .account
-                    .clone()
-                    .filter(|a| !a.trim().is_empty())
-                    .ok_or("--mode push 必须同时给出 --account")?,
-            },
-        })
+    /// 生效的手机确认账号：`--account` 优先，否则用上次记住的。
+    pub fn account_or(&self, stored: Option<&str>) -> Option<String> {
+        self.account
+            .clone()
+            .or_else(|| stored.map(str::to_string))
+            .filter(|a| !a.trim().is_empty())
+    }
+
+    /// 本次怎么登录。
+    ///
+    /// `last` 是 `device.json` 记的上次用的链（auto 用它当回退）；`stored_account` 是
+    /// 上次记住的手机确认账号（`--account` 缺省时用它）。
+    pub fn method(
+        &self,
+        last: sdo_client::Chain,
+        stored_account: Option<&str>,
+    ) -> Result<sdo_client::Method, String> {
+        let (chain, fast) = match self.mode {
+            Mode::Qr => (sdo_client::Chain::Qr, false),
+            Mode::Auto => (last, true),
+            Mode::Push => (
+                sdo_client::Chain::Push {
+                    account: self
+                        .account_or(stored_account)
+                        .ok_or("--mode push 需要 --account（或先成功用过一次手机登录）")?,
+                },
+                false,
+            ),
+        };
+        Ok(sdo_client::Method { chain, fast })
     }
 
     /// 构造流程调参；未在 CLI 暴露的项用默认值。
@@ -150,7 +167,6 @@ impl Args {
         if self.qr_max_attempts < 5 || self.qr_timeout < 15 {
             eprintln!("提示：轮询参数偏小，未扫码时会很快换码");
         }
-        self.method()?;
         Ok(())
     }
 }
@@ -181,9 +197,11 @@ mod tests {
     #[test]
     fn push_requires_account() {
         let a = Args::parse_from(["sdo-ffxiv-launcher", "--mode", "push"]);
-        assert!(a.validate().is_err());
+        assert!(a.method(sdo_client::Chain::Qr, None).is_err());
         let b = Args::parse_from(["sdo-ffxiv-launcher", "--mode", "push", "--account", "a@b.c"]);
-        assert!(b.validate().is_ok());
+        assert!(b.method(sdo_client::Chain::Qr, None).is_ok());
+        // 上次记住的账号也算
+        assert!(a.method(sdo_client::Chain::Qr, Some("a@b.c")).is_ok());
     }
 
     #[test]

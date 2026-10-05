@@ -28,7 +28,7 @@ mod ui;
 pub use api::{Api, FaceVerify, FastLogin, FetchedTable, Poll, ProbePaths, QrCode, Request};
 pub use endpoint::{App, GAME_APP_ID, LOGIN_APP};
 pub use error::{Error, Kind, Result};
-pub use flow::{Flow, KeepKey, Method, Policy};
+pub use flow::{Chain, Flow, KeepKey, Method, Policy};
 pub use tickets::GameTicket;
 pub use transport::Identity;
 pub use ui::{Action, Note, Phase, Ui, Wait};
