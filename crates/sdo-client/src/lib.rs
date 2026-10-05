@@ -1,32 +1,33 @@
 //! SDO 网络交互库：EXE 侧唯一的网络发起方（纯网络 + 纯内存解析，无文件 IO）。
 //!
-//! - [`Client`]：一次登录会话的网络身份
-//!   （[`Identity`] 快照 + `runTimeId` + 应用口径 [`App`]），
-//!   所有网络交互都是它的方法；调用方只传类型化参数，不拼 query 字符串。
-//!   登录应用与游戏应用是同一种 [`App`]：前者是客户端的默认口径，后者按次传入。
-//! - [`endpoint`]：每个服务端 API 是一个端点结构体（`HOST` + `TIMEOUT` + `path()`）。
-//! - [`resp`]：响应解析与 `CODEKEY` 提取。
-//! - [`server`]：区服表解析与游戏命令行拼接（纯内存，无落盘）。
-//! - [`tickets`]：登录票据（T0）与游戏票据（T1）类型。
-//! - [`error`]：失败分类与用户文案/排查细节分离；上层的重试/回退只看
-//!   [`Error::is_retryable`]，面向用户的输出只看 [`Error::user`]（= `Display`）。
+//! 分两层，两个对象：
 //!
-//! 本库不持有进程级全局状态：不读写任何文件（`device.json/server.json` 落盘与回退由
-//! EXE 侧完成），不做 UI（二维码渲染/按键/选区菜单在 EXE 侧）。唯一的实例状态是
-//! [`Client`] 自己发出的后台附属请求句柄（[`Client::wait_pending`]）。
+//! - **层 1 [`Api`]**：接口封装，一个方法 = 一个服务端接口；内部持登录链的服务端值
+//!   （`guid` / `codeKey` / `tgt` / `authorization`）。只做「发请求 + 解析 + 记状态」，
+//!   不含循环、回退、重试、落盘、UI。
+//! - **层 2 [`Flow`]**：FFXIV 启动器的流程封装 —— 登录链、换票、人脸验证、附属请求。
+//!   循环与业务规则都在这里；UI 通过 [`Ui`] 反向调用，落盘与起进程由 EXE 做。
+//!
+//! 其余模块都是这两层的零件：[`endpoint`](crate) 与 `transport` 是层 1 的内部，
+//! `server` 是 `server.json` 的 schema，[`Error`] 是错误分类。
+//!
+//! 本库不持有进程级全局状态：不读写任何文件（`device.json` / `server.json` 的落盘与
+//! 回退由 EXE 完成），不做 UI（二维码渲染/按键/选区菜单在 EXE 侧）。
 
-pub mod areas;
-pub mod auxreq;
-pub mod client;
-pub mod endpoint;
-pub mod error;
-pub mod login;
-pub mod resp;
+mod api;
+mod endpoint;
+mod error;
+mod flow;
+mod resp;
 pub mod server;
-pub mod sso;
-pub mod tickets;
+mod tickets;
+mod transport;
+mod ui;
 
-pub use client::{Client, Identity, Resp, Timeout};
+pub use api::{Api, FaceVerify, FastLogin, FetchedTable, Poll, ProbePaths, QrCode, Request};
 pub use endpoint::{App, GAME_APP, LOGIN_APP};
-pub use error::{Error, Result};
-pub use tickets::{GameTicket, LoginTicket};
+pub use error::{Error, Kind, Result};
+pub use flow::{Flow, KeepKey, Mode, Policy};
+pub use tickets::GameTicket;
+pub use transport::Identity;
+pub use ui::{Action, Note, Phase, Ui, Wait};

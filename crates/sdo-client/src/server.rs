@@ -1,13 +1,12 @@
-//! 区服表解析与游戏命令行拼接。
+//! 区服表解析（`server.json` 的服务端 schema）。
 //!
 //! 运行时以官方接口为准，本地 `./server.json` 仅断网备用。
+//! 拿这张表拼**游戏进程命令行**是 EXE 的事（见 launcher 侧的 `cmdline::Builder`）。
 
 use serde_json::Value;
 
 use proto::consts::DEFAULT_LOBBY_PORT;
-use proto::log;
 
-use crate::endpoint::GAME_APP;
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +29,7 @@ pub struct SubArea {
 
 impl SubArea {
     /// 缺失的映射键：缺任一键即中止并列出。
-    pub(crate) fn missing_keys(&self) -> Vec<&'static str> {
+    pub fn missing_keys(&self) -> Vec<&'static str> {
         let m = match &self.meta {
             Some(m) => m,
             None => return vec!["meta"],
@@ -52,7 +51,7 @@ impl SubArea {
     }
 
     /// 区服入口 host/port：`domain` 非空优先（按最后一个 `:` 切），否则 `LobbyHost` + `LobbyPort01/54994`。
-    pub(crate) fn lobby_endpoint(&self) -> Option<(String, String)> {
+    pub fn lobby_endpoint(&self) -> Option<(String, String)> {
         let m = self.meta.as_ref()?;
         if !self.domain.trim().is_empty() {
             return Some(split_host_port(&self.domain, DEFAULT_LOBBY_PORT));
@@ -151,28 +150,6 @@ fn parse_meta(raw: &str) -> Option<Meta> {
     })
 }
 
-/// 游戏命令行（字段顺序逐字固定）。
-pub fn build_base(area: &SubArea) -> Result<String> {
-    let missing = area.missing_keys();
-    if !missing.is_empty() {
-        let keys = missing.join(", ");
-        log::error(&format!("子区 {} 缺少 meta 映射键: {keys}", area.id));
-        return Err(Error::rejected(format!(
-            "无法进入大区 {}：区服配置缺少必要字段，请稍后重试或更新启动器",
-            area.id
-        )));
-    }
-    // missing_keys() 为空 ⇒ meta 存在且 lobby_host 非空，因此下面两处必有值。
-    let meta = area.meta.as_ref().expect("missing_keys 已保证 meta 存在");
-    let (host, port) = area
-        .lobby_endpoint()
-        .expect("missing_keys 已保证 Lobby 入口存在");
-    Ok(format!(
-        "-AppID={} -AreaID={} Dev.LobbyHost01={} Dev.LobbyPort01={} Dev.GMServerHost={} Dev.SaveDataBankHost={} resetConfig={} DEV.MaxEntitledExpansionID=1",
-        GAME_APP.app_id, area.id, host, port, meta.gm_host, meta.sdb_host, meta.reset_config
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,32 +178,6 @@ mod tests {
         );
         // 菜单只给 id + 名字，不带 lobby/GM/domain 等元数据
         assert_eq!(a6.menu_line(), "  [6] 莫古力");
-    }
-
-    #[test]
-    fn base_matches_frozen_instance() {
-        let t = parse_server_json(FIXTURE).unwrap();
-        let base = build_base(t.find("7").unwrap()).unwrap();
-        assert_eq!(
-            base,
-            "-AppID=100001900 -AreaID=7 Dev.LobbyHost01=ffxivlobby07.ff14.sdo.com Dev.LobbyPort01=54994 \
-Dev.GMServerHost=ffxivgm07.ff14.sdo.com Dev.SaveDataBankHost=ffxivsdb07.ff14.sdo.com resetConfig=0 \
-DEV.MaxEntitledExpansionID=1"
-        );
-    }
-
-    #[test]
-    fn missing_meta_key_aborts_with_list() {
-        let text = r#"{"data":{"areaInfos":[{"subArea":[{"id":"9","name":"x","open":1,"status":"空闲","domain":"","meta":"{\"Dev.LobbyHost01\":\"h\"}"}]}]}}"#;
-        let t = parse_server_json(text).unwrap();
-        let a = t.find("9").unwrap();
-        let missing = a.missing_keys();
-        assert!(missing.contains(&"Dev.GMServerHost"), "{missing:?}");
-        assert!(missing.contains(&"Dev.SaveDataBankHost"), "{missing:?}");
-        assert!(missing.contains(&"resetConfig"), "{missing:?}");
-        // 面向用户的错误串不提字段名，细节留在日志里。
-        let err = build_base(a).unwrap_err().to_string();
-        assert!(!err.contains("Dev."), "{err}");
     }
 
     #[test]

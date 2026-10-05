@@ -8,6 +8,8 @@
 
 use std::io::{IsTerminal, Write};
 
+use proto::log;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // 非 Windows 平台没有按键来源，三个变体不会被构造（但仍会被 login 匹配）。
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -247,5 +249,124 @@ pub fn pick_area(menu_lines: &[String], allowed: &[String]) -> Option<String> {
             return Some(t.to_string());
         }
         println!("非法选择：{t}（应为 {}）", allowed.join("/"));
+    }
+}
+
+/// EXE 侧的 [`sdo_client::Ui`] 实现：终端渲染 + 按键 + 二维码窗口。
+///
+/// 轮询循环在 `sdo_client::Flow` 里，这里只负责"展示 + 干预"：
+/// 二维码落盘与渲染、按键读取、状态行、以及把「保持登录」勾选回报给层 2。
+pub struct TerminalUi {
+    keys: Keys,
+    keep_login: bool,
+    render: crate::cli::QrRender,
+    qr_out: Option<std::path::PathBuf>,
+    /// 显示中的原生二维码窗口；换码 / 结束时 drop 掉即关闭。
+    window: Option<crate::qrwindow::NativeWindow>,
+}
+
+impl TerminalUi {
+    pub fn new(
+        render: crate::cli::QrRender,
+        qr_out: Option<std::path::PathBuf>,
+        keep_login: bool,
+    ) -> TerminalUi {
+        TerminalUi {
+            keys: Keys::new(),
+            keep_login,
+            render,
+            qr_out,
+            window: None,
+        }
+    }
+}
+
+impl sdo_client::Ui for TerminalUi {
+    fn show_code(&mut self, png: &[u8], round: u32) {
+        // 上一张码的窗口先关掉。
+        self.window = None;
+        let saved = match crate::qr::save_png_at(png, self.qr_out.as_deref()) {
+            Ok(p) => {
+                println!("\n第 {round} 张二维码（也已保存到 {}）：", p.display());
+                Some(p)
+            }
+            Err(e) => {
+                log::debug(&format!("二维码图片保存失败：{e}"));
+                println!("\n第 {round} 张二维码：");
+                None
+            }
+        };
+        if self.render != crate::cli::QrRender::Ascii {
+            match crate::qrwindow::show(png) {
+                Ok(w) => {
+                    self.window = Some(w);
+                    println!("已弹出二维码窗口（本张码结束时自动关闭）。");
+                    return;
+                }
+                Err(reason) => log::debug(&format!(
+                    "二维码窗口不可用：{reason}（{}）",
+                    crate::qrwindow::environment_facts()
+                )),
+            }
+        }
+        let want_color = self.render == crate::cli::QrRender::Auto && color_ok();
+        if let Err(e) = crate::qr::render_terminal_with(png, want_color) {
+            log::debug(&format!("终端二维码渲染细节：{e}"));
+            match saved {
+                Some(p) => println!("终端显示失败，请直接扫 {}", p.display()),
+                None => println!("终端显示失败"),
+            }
+        }
+    }
+
+    fn tick(&mut self, wait: sdo_client::Wait) -> sdo_client::Action {
+        if let Some(k) = self.keys.poll() {
+            match k {
+                Key::Quit => return sdo_client::Action::Quit,
+                Key::CancelCode => return sdo_client::Action::RefreshCode,
+                // 按键直接改的是这个字段；层 2 每轮通过 keep_login() 来读。
+                Key::KeepLogin => self.keep_login = true,
+            }
+        }
+        match wait.phase {
+            sdo_client::Phase::ScanCode => status(&format!(
+                "[{:>3}s] 等待扫码　按键：k=勾选保持登录　Ctrl+C=换一张码　q=退出　保持登录：{}",
+                wait.left_secs,
+                if self.keep_login { "已勾选" } else { "未勾选" }
+            )),
+            sdo_client::Phase::ConfirmPush => {
+                status(&format!("[{:>3}s] 等待手机确认　q=退出", wait.left_secs))
+            }
+        }
+        sdo_client::Action::Wait
+    }
+
+    fn keep_login(&self) -> bool {
+        self.keep_login
+    }
+
+    fn note(&mut self, note: sdo_client::Note) {
+        match note {
+            sdo_client::Note::Scanned => {
+                self.window = None;
+                status_end();
+                println!("扫码成功");
+            }
+            sdo_client::Note::CodeRefreshed(reason) => {
+                self.window = None;
+                status_end();
+                println!("\n本张码结束（{reason}），正在获取新码…");
+            }
+            sdo_client::Note::PushSent => {
+                println!("已发送手机确认请求（请在手机 App 上确认），等待确认…");
+            }
+            sdo_client::Note::ServerError(text) => {
+                status_end();
+                println!("服务端返回错误：{text}");
+            }
+            sdo_client::Note::ExchangeFailed(reason) => {
+                println!("换票失败（{reason}），重新扫码登录…");
+            }
+        }
     }
 }

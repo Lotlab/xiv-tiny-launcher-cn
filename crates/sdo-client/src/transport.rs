@@ -1,10 +1,7 @@
-//! 最小 HTTP 传输层 + 会话客户端。
+//! 私有传输层：HTTP 客户端 + 会话身份快照。对外只暴露 [`Identity`]。
 //!
-//! - HTTP 客户端按超时种类缓存（连接不复用），固定 `Host / User-Agent / Accept` 三行头，
-//!   不设 `Referer`，Cookie jar 禁用（只取 `CODEKEY`，见 [`crate::resp`]）。
-//! - 成功条件（仅 `HTTP 200`；`200 + return_code != 0` 按失败走各自分支）由各业务方法判定，
-//!   本层只透传状态码与原文。
-//! - 错误分类见 [`Error`]；用户文案与排查细节分离，完整 URL 只写入日志。
+//! HTTP 客户端按超时种类缓存（连接不复用），固定 `Host / User-Agent / Accept` 三行头，
+//! 不设 `Referer`，Cookie jar 禁用。本层只透传状态码与原文。
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -12,29 +9,26 @@ use std::time::Duration;
 use proto::consts::{ACCEPT, TIMEOUT_AUTH_MS, TIMEOUT_DOWNLOAD_MS, UA};
 use proto::log;
 
-use crate::auxreq::Pending;
-use crate::endpoint::{App, Endpoint, LOGIN_APP};
+use crate::error::{Error, Result};
 
-pub use crate::error::{Error, Result};
-
-#[derive(Debug)]
-pub struct Resp {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
+/// 原始响应。
+pub(crate) struct Resp {
+    pub(crate) status: u16,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) body: Vec<u8>,
 }
 
 impl Resp {
-    pub fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 
-    pub fn json(&self) -> Result<serde_json::Value> {
+    pub(crate) fn json(&self) -> Result<serde_json::Value> {
         serde_json::from_slice(&self.body).map_err(|e| Error::parse(format!("JSON 解析失败: {e}")))
     }
 
     /// 大小写不敏感的响应头取值（同名多值全部返回）。
-    pub fn header_values(&self, name: &str) -> Vec<&str> {
+    pub(crate) fn header_values(&self, name: &str) -> Vec<&str> {
         self.headers
             .iter()
             .filter(|(k, _)| k.eq_ignore_ascii_case(name))
@@ -43,8 +37,9 @@ impl Resp {
     }
 }
 
+/// 超时种类。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Timeout {
+pub(crate) enum Timeout {
     /// CAS 认证接口（短超时）。
     Auth,
     /// 下载类（长超时）。
@@ -52,7 +47,7 @@ pub enum Timeout {
 }
 
 impl Timeout {
-    fn ms(self) -> u64 {
+    pub(crate) fn ms(self) -> u64 {
         match self {
             Timeout::Auth => TIMEOUT_AUTH_MS,
             Timeout::Download => TIMEOUT_DOWNLOAD_MS,
@@ -60,10 +55,8 @@ impl Timeout {
     }
 }
 
-/// 网络身份：`Client` 唯一关心的设备字段（会话内不变）。
-///
-/// 刻意不持有整个 [`proto::device::Device`]，只快照网络需要的四个字段；
-/// 落盘字段（`keepLoginKey/lastAreaId`）由 EXE 侧管理，不进本库视野。
+/// 网络身份：设备档案里网络需要的四个字段（会话内不变）。
+/// 落盘字段（`keepLoginKey` / `lastAreaId`）由 EXE 管理，不进本库视野。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     /// `{SEG0}:{SEG1}:`（第三段空，保留末尾冒号原文发送）。
@@ -84,72 +77,6 @@ impl From<&proto::device::Device> for Identity {
             ep_ip: d.ep_ip.clone(),
             ep_name: d.ep_name.clone(),
         }
-    }
-}
-
-/// SDO 网络客户端：一次登录会话的网络身份
-/// （设备快照 + 本进程 `runTimeId` + 应用口径）。
-///
-/// 构造时克隆快照。应用口径默认是登录应用（[`LOGIN_APP`]），可用
-/// [`Client::with_app`] 覆盖；换票的游戏应用口径按次传入
-/// （[`Client::exchange`](crate::client::Client::exchange)）。
-///
-/// `Client` 同时持有自己发出的后台附属请求句柄，退出前必须调用
-/// [`Client::wait_pending`]（见 [`crate::auxreq`]）。克隆共享同一份句柄清单。
-#[derive(Debug, Clone)]
-pub struct Client {
-    identity: Identity,
-    run_time_id: String,
-    app: App,
-    pub(crate) pending: Pending,
-}
-
-impl Client {
-    /// 按冻结口径构造（登录应用 = [`LOGIN_APP`]）。
-    pub fn new(identity: Identity, run_time_id: impl Into<String>) -> Client {
-        Client::with_app(identity, run_time_id, LOGIN_APP)
-    }
-
-    /// 指定应用口径构造（需要非默认的登录应用时用）。
-    pub fn with_app(
-        identity: Identity,
-        run_time_id: impl Into<String>,
-        app: App,
-    ) -> Client {
-        Client {
-            identity,
-            run_time_id: run_time_id.into(),
-            app,
-            pending: Pending::default(),
-        }
-    }
-
-    /// 网络身份（同 crate 业务方法使用）。
-    pub(crate) fn identity(&self) -> &Identity {
-        &self.identity
-    }
-
-    /// 本进程 `runTimeId`。
-    pub(crate) fn run_time_id(&self) -> &str {
-        &self.run_time_id
-    }
-
-    /// 应用口径。
-    pub(crate) fn app(&self) -> &App {
-        &self.app
-    }
-
-    /// 等待本客户端发出的后台附属请求结束，总预算 `budget`。
-    ///
-    /// 附属请求是后台线程，`process::exit` 会直接终止它们；退出前调用一次。
-    pub fn wait_pending(&self, budget: Duration) {
-        self.pending.wait(budget);
-    }
-
-    /// 执行一个端点：`GET https://{HOST}{path}`，返回原始响应
-    /// （状态码由各业务方法判定，本层不代劳）。
-    pub(crate) fn get<E: Endpoint>(&self, ep: &E) -> Result<Resp> {
-        fetch(E::HOST, &ep.path(), E::TIMEOUT)
     }
 }
 
@@ -188,7 +115,7 @@ fn display_url(host: &str, path_query: &str) -> String {
     }
 }
 
-/// 底层传输函数：供后台线程直接调用，参数是已拼好的 host、path 与超时。
+/// 底层传输函数：参数是已拼好的 host、path 与超时。
 pub(crate) fn fetch(host: &str, path_query: &str, timeout: Timeout) -> Result<Resp> {
     let ms = timeout.ms();
     let inner = http_client(timeout)?;

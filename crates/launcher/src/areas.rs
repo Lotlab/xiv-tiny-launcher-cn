@@ -4,15 +4,16 @@
 use proto::consts::FILE_SERVER;
 use proto::{log, paths};
 
-use sdo_client::Client;
 use sdo_client::server::{ServerTable, SubArea};
+use sdo_client::{Api, GAME_APP};
 
 use crate::error::{Error, Result};
 use crate::ui;
 
 /// 拉取区服表；成功后覆盖写本地备份，失败回退本地缓存。
-pub fn fetch_table(net: &Client) -> Result<ServerTable> {
-    match net.fetch_server_table() {
+pub fn fetch_table(api: &Api) -> Result<ServerTable> {
+    // 表服务的身份取游戏应用。
+    match api.server_json(&GAME_APP) {
         Ok(fetched) => {
             let file = paths::cwd_file(FILE_SERVER);
             if let Err(e) = paths::write_atomic(&file, &fetched.raw) {

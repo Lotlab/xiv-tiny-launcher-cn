@@ -552,7 +552,7 @@ mod tests {
     /// 真实 PNG 必须还原成 33x33、极性与定位图案都正确的模块网格。
     #[test]
     fn server_png_decodes_to_correct_grid() {
-        assert!(sdo_client::resp::is_png(SERVER_PNG), "夹具不是 PNG");
+        assert_eq!(&SERVER_PNG[..4], b"\x89PNG", "夹具不是 PNG");
         let grid = module_grid(SERVER_PNG).unwrap();
         let n = grid.len();
         assert_eq!(n, 33, "真实 PNG 是 version 4（33 模块）");

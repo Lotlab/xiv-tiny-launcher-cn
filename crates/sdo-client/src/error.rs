@@ -20,6 +20,10 @@ pub enum Kind {
     Parse,
     /// 服务端明确拒绝：重试无用。
     Rejected,
+    /// 调用顺序错误：层 1 需要的前置状态还没取到（调用方的 bug，不该发生）。
+    State,
+    /// 用户主动中止流程（不是网络错误）。
+    Quit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +68,16 @@ impl Error {
         Error::new(Kind::Rejected, user.clone(), user)
     }
 
+    /// 调用顺序错误：层 1 的前置状态缺失（调用方的 bug）。
+    pub fn state(detail: impl Into<String>) -> Error {
+        Error::new(Kind::State, "内部状态错误，请重试", detail)
+    }
+
+    /// 用户主动中止。
+    pub fn quit() -> Error {
+        Error::new(Kind::Quit, "已取消", "用户中止")
+    }
+
     /// 覆盖用户文案（解析类错误需要给具体提示时用）。
     pub fn with_user(mut self, user: impl Into<String>) -> Error {
         self.user = user.into();
@@ -77,8 +91,14 @@ impl Error {
     }
 
     /// 是否值得重试。`Http` 也算：这些接口的非 200 都是“服务繁忙”语义。
+    /// `Rejected` / `State` / `Quit` 都是终态。
     pub fn is_retryable(&self) -> bool {
-        !matches!(self.kind, Kind::Rejected)
+        !matches!(self.kind, Kind::Rejected | Kind::State | Kind::Quit)
+    }
+
+    /// 是否是用户主动中止（EXE 据此按“正常退出”处理，而不是报错）。
+    pub fn is_quit(&self) -> bool {
+        matches!(self.kind, Kind::Quit)
     }
 
     pub fn kind(&self) -> Kind {
@@ -120,11 +140,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_rejected_is_not_retryable() {
+    fn only_terminal_kinds_are_not_retryable() {
         assert!(Error::transport("x").is_retryable());
         assert!(Error::http(503, "x").is_retryable());
         assert!(Error::parse("x").is_retryable());
         assert!(!Error::rejected("x").is_retryable());
+        assert!(!Error::state("x").is_retryable());
+        assert!(!Error::quit().is_retryable());
+        assert!(Error::quit().is_quit());
+        assert!(!Error::rejected("x").is_quit());
         assert_eq!(Error::http(503, "x").kind(), Kind::Http(503));
     }
 

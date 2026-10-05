@@ -3,14 +3,10 @@
 use proto::device::Device;
 use proto::enc;
 use proto::log;
-use sdo_client::endpoint::{
-    App, Endpoint, FastInLogin, GAME_APP, LOGIN_APP, SsoAuthorization, SsoLogin, Suffix,
-};
-use sdo_client::server;
+use sdo_client::{GAME_APP, LOGIN_APP};
 
 use crate::cli::Args;
 use crate::game::GameDirs;
-use crate::login;
 
 /// 逐项判定。
 enum Verdict {
@@ -93,13 +89,15 @@ pub fn run(
         },
     );
 
-    let net = sdo_client::Client::new(
+    let mut api = sdo_client::Api::new(
         sdo_client::Identity::from(device),
         run_time_id.to_owned(),
     );
+    let login_app = sdo_client::LOGIN_APP;
+    let game_app = sdo_client::App::game("7");
 
     // QR 探测（不扫码）。
-    let qr_probe = login::probe_qr(&net);
+    let qr_probe = probe_qr(&mut api, &login_app);
 
     // Cookie：只确认请求默认不带 Cookie，需要技术人员抓包复核。
     r.line(
@@ -110,8 +108,8 @@ pub fn run(
 
     // QR（不扫码）
     match qr_probe {
-        Ok(probe) => {
-            if !probe.guid.is_empty() && probe.has_codekey_png {
+        Ok((guid, bytes)) => {
+            if !guid.is_empty() && bytes > 0 {
                 r.line(
                     "二维码接口",
                     Verdict::Pass,
@@ -135,7 +133,7 @@ pub fn run(
         }
     }
 
-    let leg_ok = check_sso_template(device, run_time_id);
+    let leg_ok = check_sso_template(&api, &login_app, &game_app);
     r.line(
         "换票参数模板",
         if leg_ok { Verdict::Pass } else { Verdict::Fail },
@@ -153,11 +151,11 @@ pub fn run(
     );
 
     // 命令行：在线/本地区服表 + 逐子区 base 断言
-    match crate::areas::fetch_table(&net) {
+    match crate::areas::fetch_table(&api) {
         Ok(table) => {
             let mut all_ok = true;
             for a in &table.sub_areas {
-                match server::build_base(a) {
+                match crate::cmdline::Builder::new(a).build() {
                     Ok(base) => {
                         let ok = base.contains(&format!("-AreaID={} ", a.id))
                             && base.starts_with(&format!("-AppID={} ", GAME_APP.app_id))
@@ -215,11 +213,10 @@ pub fn run(
     }
 
     // 回退路径
-    let login_app = LOGIN_APP;
-    let id = sdo_client::Identity::from(device);
-    let fast_suffix = Suffix::login_no_group(&id, run_time_id, &login_app);
-    let fast_path = FastInLogin::new(fast_suffix, "<keepLoginKey>").path();
-    let fb_ok = !fast_path.contains("groupId");
+    let fb_ok = !api
+        .probe_paths(&login_app, &game_app)
+        .fast_in_login
+        .contains("groupId");
     r.line(
         "回退路径",
         if fb_ok { Verdict::Pass } else { Verdict::Fail },
@@ -264,26 +261,27 @@ pub fn run(
     Ok(())
 }
 
-fn check_sso_template(device: &Device, run_time_id: &str) -> bool {
-    // 换票：从当前 App（登录应用）换到新的 App（游戏应用）。
-    let from = LOGIN_APP;
-    let to = App::game("7");
-    let id = sdo_client::Identity::from(device);
-    let s1 = Suffix::for_sso_authorization(&id, run_time_id, &from, &to);
-    let p1 = SsoAuthorization::new(s1, "<tgt0>", "<guid0>").path();
-    let s2 = Suffix::for_sso_login(&id, run_time_id, &to);
-    let p2 = SsoLogin::new(s2, "<UA>").path();
-    !p2.contains("guid=")
-        && !p2.contains("tgt=")
-        && p2.contains("&epIp=&epName=")
-        && p2.contains("&runTimeId=&channelId=")
-        && p2.contains(&format!(
+/// 二维码接口探测（不扫码）：取 guid + 一张码；两者都成功即接口可用。
+fn probe_qr(api: &mut sdo_client::Api, app: &sdo_client::App) -> sdo_client::Result<(String, usize)> {
+    let guid = api.get_guid(app)?;
+    let code = api.get_code_key(app)?;
+    Ok((guid, code.png.len()))
+}
+
+/// 换票两步的参数口径（用样例选区 7 渲染）。
+fn check_sso_template(api: &sdo_client::Api, app: &sdo_client::App, target: &sdo_client::App) -> bool {
+    let p = api.probe_paths(app, target);
+    !p.sso_authorization_login.contains("guid=")
+        && !p.sso_authorization_login.contains("tgt=")
+        && p.sso_authorization_login.contains("&epIp=&epName=")
+        && p.sso_authorization_login.contains("&runTimeId=&channelId=")
+        && p.sso_authorization_login.contains(&format!(
             "productVersion={}",
             enc::url_encode(GAME_APP.product_version)
         ))
-        && p1.contains(&format!(
+        && p.sso_authorization.contains(&format!(
             "productVersion={}",
             enc::url_encode(LOGIN_APP.product_version)
         ))
-        && p1.contains("&scene=V3Launcher&")
+        && p.sso_authorization.contains("&scene=V3Launcher&")
 }

@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use proto::consts::*;
 use proto::enc;
 
-use crate::client::{Identity, Timeout};
+use crate::transport::{Identity, Timeout};
 
 /// 服务端接口端点。
 pub trait Endpoint {
@@ -25,7 +25,7 @@ pub trait Endpoint {
 ///
 /// 冻结字面量用 `&'static str`、选区用 [`Cow`]，所以两个 App 各自就是一个常量：
 /// [`LOGIN_APP`] / [`GAME_APP`]。换票是「从当前 App 换到新的 App」，两步各取对应
-/// App 的版本号，见 [`Suffix::for_sso_authorization`] / [`Suffix::for_sso_login`]。
+/// App 的版本号；换票两步各取对应 App 的，见 `Suffix` 的 SSO 构造函数。
 ///
 /// 字段全 `pub`，需要改口径时直接构造。自检（`login_suffix_param_order` 等）
 /// 断言的是 [`LOGIN_APP`] / [`App::game`] 口径。
@@ -519,7 +519,7 @@ impl Endpoint for Agreement {
 
 /// 人脸验证初始化（`bizVersion` 点号原样；顶层字段是 `resultCode` 而非 `return_code`）。
 /// `appId/areaId/bizVersion` 取登录应用口径。
-pub struct FaceVerify {
+pub struct FaceVerifyInit {
     device_id: String,
     app_id: String,
     area_id: String,
@@ -527,15 +527,15 @@ pub struct FaceVerify {
     tgt: String,
 }
 
-impl FaceVerify {
+impl FaceVerifyInit {
     pub fn new(
         device_id: impl Into<String>,
         app_id: impl Into<String>,
         area_id: impl Into<String>,
         product_version: impl Into<String>,
         tgt: impl Into<String>,
-    ) -> FaceVerify {
-        FaceVerify {
+    ) -> FaceVerifyInit {
+        FaceVerifyInit {
             device_id: device_id.into(),
             app_id: app_id.into(),
             area_id: area_id.into(),
@@ -545,7 +545,7 @@ impl FaceVerify {
     }
 }
 
-impl Endpoint for FaceVerify {
+impl Endpoint for FaceVerifyInit {
     const HOST: &'static str = HOST_GFC;
     const TIMEOUT: Timeout = Timeout::Auth;
     fn path(&self) -> String {
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn aux_templates_keep_raw_dots() {
         let s = Suffix::login(&id(), RTID, &login_app());
-        let fv = FaceVerify::new(
+        let fv = FaceVerifyInit::new(
             "88440FF9DD5D5C6819D6D4652279A1BC:4F2A1C7E9B0D3568A1E4C7F02B9D6E31:",
             LOGIN_APP.app_id,
             LOGIN_APP.area_id.clone(),

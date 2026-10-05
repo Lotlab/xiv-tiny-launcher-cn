@@ -1,15 +1,12 @@
 //! `sdo-ffxiv-launcher` — FFXIV CN（盛趣）自研启动器。
 //!
-//! 流程：设备档案 → 登录前附属请求 → 登录链（QR/push/fast）
-//! → SSO 换票 → 登录后附属请求
-//! → 构造启动参数 → 设置交接环境变量 → 启动游戏。
+//! 网络与流程都在 `sdo-client`（`Api` / `Flow`）；这里只做 UI、落盘、起进程。
 
 mod areas;
 mod cli;
-mod ctx;
+mod cmdline;
 mod error;
 mod game;
-mod login;
 mod qr;
 mod qrimage;
 /// 原生二维码窗口只在 Windows 上有实现（见 `qrwindow`）。
@@ -21,6 +18,8 @@ mod single;
 mod ui;
 mod winproc;
 
+use std::time::Duration;
+
 use clap::Parser;
 
 use proto::consts::*;
@@ -30,7 +29,6 @@ use proto::log;
 use proto::paths;
 
 use cli::Args;
-use ctx::Ctx;
 use error::{Error, Result};
 
 fn main() {
@@ -50,18 +48,6 @@ fn main() {
     };
     log::flush();
     std::process::exit(code);
-}
-
-/// 退出前等一等后台附属请求：它们是分离的线程，`process::exit` 不会等。
-///
-/// 用 `Drop` 而不是在 `run` 末尾显式调用，是为了让 `?` 提前返回的路径也覆盖到。
-struct AuxWait<'a>(&'a sdo_client::Client);
-
-impl Drop for AuxWait<'_> {
-    fn drop(&mut self) {
-        self.0
-            .wait_pending(std::time::Duration::from_millis(AUX_WAIT_BUDGET_MS));
-    }
 }
 
 fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
@@ -126,58 +112,40 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         println!("通过兼容层启动游戏：{l}");
     }
 
-    let net = sdo_client::Client::new(
-        sdo_client::Identity::from(&device),
-        run_time_id,
-    );
-    // 本会话的附属请求都挂在这个 `net` 上；退出时（含提前 `?` 返回）由它统一收尾。
-    let _aux = AuxWait(&net);
-    let table = areas::fetch_table(&net)?;
-    let pick =
-        areas::resolve_area(&table, args.area.as_deref(), device.last_area_id.as_deref())?;
+    let mut api = sdo_client::Api::new(sdo_client::Identity::from(&device), run_time_id);
+
+    // 区服表：拉取在层 1，缓存回退与落盘在这里。
+    let table = areas::fetch_table(&api)?;
+    let pick = areas::resolve_area(&table, args.area.as_deref(), device.last_area_id.as_deref())?;
     let (area, from_last) = (pick.area, pick.from_last);
-    let base = sdo_client::server::build_base(&area)?;
+    let base = cmdline::Builder::new(&area).build()?;
     if from_last {
         println!("使用上次的大区：{}；用 --area <id> 可临时更换", area.name);
     }
     println!("已选定大区：{}", area.name);
     log::info(&format!("已选定大区 {}", area.name));
 
-    let mut ctx = Ctx {
-        device: device.clone(),
-        device_path: paths::cwd_file(FILE_DEVICE),
-        args: args.clone(),
+    let mut flow = sdo_client::Flow::new(
+        args.policy(),
+        sdo_client::LOGIN_APP,
+        sdo_client::App::game(area.id.as_str()),
+    );
+    let mut session_ui = ui::TerminalUi::new(
+        args.qr_render,
+        args.qr_out.clone(),
+        args.keep_login_flag() == KEEP_LOGIN_FLAG_CHECKED,
+    );
+    let outcome = flow.run(&mut api, &mut session_ui, device.keep_login_key.as_deref());
+
+    // 无论成败：续登凭据的决定要落盘，后台附属请求要收尾。
+    apply_keep_key(&mut device, flow.keep_key());
+    flow.wait_pending(Duration::from_millis(AUX_WAIT_BUDGET_MS));
+
+    let game_ticket = match outcome {
+        Ok(t) => t,
+        Err(e) if e.is_quit() => return Err(Error::UserQuit),
+        Err(e) => return Err(e.into()),
     };
-
-    // 附属请求先发出，失败不阻断。
-    net.pre_login();
-
-    let keep_flag = args.keep_login_flag();
-    // 游戏应用口径：与登录应用同一种类型，按次传入选区。
-    let game_app = sdo_client::App::game(area.id.clone());
-    let mut round = 0u32;
-    let (login_ticket, game_ticket) = loop {
-        round += 1;
-        if round > MAX_LOGIN_ROUNDS {
-            return Err(Error::msg(format!(
-                "换票连续 {MAX_LOGIN_ROUNDS} 轮失败，已终止"
-            )));
-        }
-        let login_ticket = login::login(&mut ctx, keep_flag, &net)?;
-        match net.exchange(&login_ticket, &game_app) {
-            Ok(game_ticket) => break (login_ticket, game_ticket),
-            Err(e) => {
-                let reason = log::sanitize(&e.to_string());
-                log::info(&format!("换票失败：{reason}"));
-                println!(
-                    "换票失败（{reason}），重新扫码登录（第 {round}/{MAX_LOGIN_ROUNDS} 轮）"
-                );
-            }
-        }
-    };
-
-    net.post_login_fire_and_forget(&login_ticket.tgt);
-    net.check_face_verify(&login_ticket.tgt)?;
 
     // 票据与大区参数直接交给子进程的环境块（游戏侧 DLL 只读），不再改本进程环境。
     let delivery = winproc::Delivery {
@@ -193,7 +161,7 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
 
     // 启动成功才记住大区。
     if device.last_area_id.as_deref() != Some(area.id.as_str()) {
-        match device.set_last_area_id(&area.id, &ctx.device_path) {
+        match device.set_last_area_id(&area.id, &paths::cwd_file(FILE_DEVICE)) {
             Ok(()) => println!("已记住大区 {}，下次默认使用", area.name),
             Err(e) => log::info(&format!("写 lastAreaId 失败（不影响启动）：{e}")),
         }
@@ -205,4 +173,17 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         println!("游戏已退出。");
     }
     Ok(())
+}
+
+/// 落盘层 2 给出的续登凭据决定；失败只记日志（不该因为写档案失败而放弃已拿到的票据）。
+fn apply_keep_key(device: &mut Device, decision: &sdo_client::KeepKey) {
+    let value = match decision {
+        sdo_client::KeepKey::Keep => return,
+        sdo_client::KeepKey::Replace(k) => Some(k.clone()),
+        sdo_client::KeepKey::Clear => None,
+    };
+    let path = paths::cwd_file(FILE_DEVICE);
+    if let Err(e) = device.set_keep_login_key(value, &path) {
+        log::debug(&format!("续登凭据落盘失败：{e}"));
+    }
 }

@@ -106,6 +106,23 @@ pub struct Args {
 }
 
 impl Args {
+    /// 构造流程参数（层 2 的 `sdo_client::Policy`）；未在 CLI 暴露的项用默认值。
+    pub fn policy(&self) -> sdo_client::Policy {
+        sdo_client::Policy {
+            mode: match self.mode {
+                Mode::Auto => sdo_client::Mode::Auto,
+                Mode::Qr => sdo_client::Mode::Qr,
+                Mode::Push => sdo_client::Mode::Push,
+            },
+            account: self.account.clone(),
+            code_timeout_secs: self.qr_timeout,
+            max_attempts: self.qr_max_attempts,
+            poll_min_ms: self.poll_min_ms,
+            poll_max_ms: self.poll_max_ms,
+            ..sdo_client::Policy::default()
+        }
+    }
+
     pub fn keep_login_flag(&self) -> i32 {
         if self.no_keep_login {
             KEEP_LOGIN_FLAG_UNSET
