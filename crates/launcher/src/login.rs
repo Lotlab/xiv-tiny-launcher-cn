@@ -65,11 +65,17 @@ pub fn login(ctx: &mut Ctx, keep_flag: i32) -> Result<LoginTicket> {
                 Err(reason) => {
                     log::warn(&format!(
                         "自动登录失败（{}），转为二维码登录",
-                        log::sanitize(&reason)
+                        log::sanitize(&reason.to_string())
                     ));
-                    let path = ctx.device_path.clone();
-                    if let Err(e) = ctx.device.set_keep_login_key(None, &path) {
-                        log::debug(&format!("清除登录信息写盘失败：{e}"));
+                    if reason.is_retryable() {
+                        // key 可能仍然有效：保留。
+                        log::debug("自动登录失败属可重试类别，保留本地登录信息");
+                    } else {
+                        // 服务端明确拒绝，key 已失效：清除。
+                        let path = ctx.device_path.clone();
+                        if let Err(e) = ctx.device.set_keep_login_key(None, &path) {
+                            log::debug(&format!("清除登录信息写盘失败：{e}"));
+                        }
                     }
                     qr_login(ctx, keep_flag, &net)
                 }
@@ -80,7 +86,7 @@ pub fn login(ctx: &mut Ctx, keep_flag: i32) -> Result<LoginTicket> {
 
 /// 二维码主流程：出码→轮询→换码循环。
 pub fn qr_login(ctx: &mut Ctx, keep_flag: i32, net: &Client) -> Result<LoginTicket> {
-    let guid = net.get_guid().map_err(Error::msg)?;
+    let guid = net.get_guid()?;
     let mut keep = keep_flag;
     let keys = ui::Keys::new();
     let mut code_round = 0u32;
@@ -93,7 +99,7 @@ pub fn qr_login(ctx: &mut Ctx, keep_flag: i32, net: &Client) -> Result<LoginTick
                 "连续更换 {MAX_QR_CODE_ROUNDS} 张二维码仍未登录成功，终止"
             )));
         }
-        let (png, code_key) = net.get_code_key().map_err(Error::msg)?;
+        let (png, code_key) = net.get_code_key()?;
         let png_path = qr::save_png_at(&png, ctx.args.qr_out.as_deref())
             .map_err(|e| Error::msg(format!("二维码图片保存失败: {e}")))?;
         println!(
@@ -340,5 +346,5 @@ pub fn probe_qr(ctx: &Ctx) -> Result<QrProbe> {
         sdo_client::Identity::from(&ctx.device),
         ctx.run_time_id.clone(),
     );
-    net.probe_qr().map_err(Error::msg)
+    Ok(net.probe_qr()?)
 }

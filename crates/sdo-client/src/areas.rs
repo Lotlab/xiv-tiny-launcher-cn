@@ -7,6 +7,7 @@ use proto::consts::GAME_APP_ID;
 
 use crate::client::{Client, Result};
 use crate::endpoint::ServerJson;
+use crate::error::Error;
 use crate::server::ServerTable;
 
 /// 区服表拉取结果：解析后的表 + 服务端原文（调用方拿原文写本地备份）。
@@ -23,9 +24,9 @@ impl Client {
         let ep = ServerJson::new(GAME_APP_ID, proto::clock::now_millis());
         let r = self.get(&ep)?;
         if r.status != 200 {
-            return Err(format!("区服接口状态码 {}", r.status));
+            return Err(Error::http(r.status, format!("区服接口状态码 {}", r.status)));
         }
-        let table = crate::server::parse_server_json(&r.text())?;
+        let table = crate::server::parse_server_json(&r.text()).map_err(Error::parse)?;
         Ok(FetchedTable {
             table,
             raw: r.body,

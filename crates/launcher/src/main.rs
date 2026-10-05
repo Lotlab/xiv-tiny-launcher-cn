@@ -48,6 +48,8 @@ fn main() {
             1
         }
     };
+    // 附属请求全部后台发送；给它们一个短预算等待，再退出。
+    sdo_client::auxreq::wait_pending(std::time::Duration::from_millis(AUX_WAIT_BUDGET_MS));
     log::flush();
     std::process::exit(code);
 }
@@ -163,9 +165,8 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         }
     };
 
-    net.post_login_fire_and_forget(&login_ticket.tgt, &game_app);
-    net.check_face_verify(&login_ticket.tgt)
-        .map_err(Error::msg)?;
+    net.post_login_fire_and_forget(&login_ticket.tgt);
+    net.check_face_verify(&login_ticket.tgt)?;
 
     // 票据与大区参数直接交给子进程的环境块（游戏侧 DLL 只读），不再改本进程环境。
     let delivery = winproc::Delivery {

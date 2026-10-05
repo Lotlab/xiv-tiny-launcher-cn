@@ -3,7 +3,6 @@
 // 服务端 host：固定值，不自动切换。
 pub const HOST_CAS: &str = "cas.sdo.com";
 pub const HOST_N_CAS: &str = "n.cas.sdo.com";
-pub const HOST_BSC: &str = "bsc.sdologin.sdo.com";
 pub const HOST_GFC: &str = "gfc.sdo.com";
 pub const HOST_UTILITY: &str = "utility.sdoprofile.com";
 pub const HOST_V3LAUNCHER: &str = "v3launcher.jijiagames.com";
@@ -53,12 +52,14 @@ pub const DEFAULT_POLL_MAX_MS: u64 = 1100;
 pub const MAX_QR_CODE_ROUNDS: u32 = 60;
 /// SSO 换票连续失败后重新登录的轮数上限。
 pub const MAX_LOGIN_ROUNDS: u32 = 3;
+/// 退出前等待后台附属请求的总预算。
+pub const AUX_WAIT_BUDGET_MS: u64 = 1500;
 pub const PUSH_SEND_MAX_TRIES: u32 = 3;
 pub const PUSH_SEND_RETRY_WAIT_MS: u64 = 1000;
 
 /// CAS 认证超时（连接超时与总超时相同）。
 pub const TIMEOUT_AUTH_MS: u64 = 5000;
-/// 下载类超时（server.json / 二维码 / getMessageFile）。
+/// 下载类超时（server.json / 二维码 / 附属请求）。
 pub const TIMEOUT_DOWNLOAD_MS: u64 = 10_000;
 
 /// 勾选：首包发 1（默认）。

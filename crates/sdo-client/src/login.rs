@@ -8,6 +8,7 @@ use crate::client::{Client, Result};
 use crate::endpoint::{
     CancelPush, CodeKeyLogin, FastInLogin, GetCodeKey, GetGuid, PushLogin, SendPush, Suffix,
 };
+use crate::error::Error;
 use crate::resp;
 use crate::tickets::LoginTicket;
 
@@ -60,12 +61,15 @@ impl Client {
     pub fn get_guid(&self) -> Result<String> {
         let r = self.get(&GetGuid::new(self.login_suffix()))?;
         if r.status != 200 {
-            return Err(format!("登录服务繁忙（HTTP {}），请重试", r.status));
+            return Err(Error::http(
+                r.status,
+                format!("登录服务繁忙（HTTP {}），请重试", r.status),
+            ));
         }
         let json = r.json()?;
         match resp::data_str(&json, "guid").filter(|g| !g.is_empty()) {
             Some(g) => Ok(g),
-            None => Err("登录服务返回异常，请重试".to_string()),
+            None => Err(Error::parse("登录服务返回异常，请重试")),
         }
     }
 
@@ -74,13 +78,16 @@ impl Client {
     pub fn get_code_key(&self) -> Result<(Vec<u8>, String)> {
         let r = self.get(&GetCodeKey::new(self.login_suffix()))?;
         if r.status != 200 {
-            return Err(format!("二维码服务繁忙（HTTP {}），请重试", r.status));
+            return Err(Error::http(
+                r.status,
+                format!("二维码服务繁忙（HTTP {}），请重试", r.status),
+            ));
         }
         if !resp::is_png(&r.body) {
-            return Err("二维码响应异常，请重试".to_string());
+            return Err(Error::parse("二维码响应异常，请重试"));
         }
         let code_key = resp::extract_codekey(r.header_values("set-cookie"))
-            .ok_or_else(|| "二维码响应异常，请重试".to_string())?;
+            .ok_or_else(|| Error::parse("二维码响应异常，请重试"))?;
         Ok((r.body, code_key))
     }
 
@@ -94,7 +101,7 @@ impl Client {
         let ep = CodeKeyLogin::new(self.login_suffix(), code_key, guid, keep_flag);
         let r = self.get(&ep)?;
         if r.status != 200 {
-            return Err(format!("扫码轮询状态码 {}", r.status));
+            return Err(Error::http(r.status, format!("扫码轮询状态码 {}", r.status)));
         }
         let json = r.json()?;
         if resp::is_success(&json, &["ticket", "sndaId", "tgt"]) {
@@ -120,16 +127,16 @@ impl Client {
         let json = match self.get(&FastInLogin::new(suffix, key)) {
             Ok(r) if r.status == 200 => match r.json() {
                 Ok(j) => j,
-                Err(e) => return Err(format!("自动登录解析失败: {e}")),
+                Err(e) => return Err(Error::parse(format!("自动登录解析失败: {e}"))),
             },
-            Ok(r) => return Err(format!("自动登录 HTTP {}", r.status)),
-            Err(e) => return Err(format!("自动登录请求失败: {e}")),
+            Ok(r) => return Err(Error::http(r.status, format!("自动登录 HTTP {}", r.status))),
+            Err(e) => return Err(Error::transport(format!("自动登录请求失败: {e}"))),
         };
         if !resp::is_success(&json, &["ticket", "sndaId", "tgt"]) {
-            return Err(format!(
+            return Err(Error::rejected(format!(
                 "自动登录被拒绝：{}",
                 resp::fail_reason_text(&json)
-            ));
+            )));
         }
         let ticket = resp::data_str(&json, "ticket").unwrap_or_default();
         let tgt = resp::data_str(&json, "tgt").unwrap_or_default();
@@ -139,7 +146,7 @@ impl Client {
             Some(g) => g,
             None => match self.get_guid() {
                 Ok(g) => g,
-                Err(e) => return Err(format!("自动登录后取 guid 失败: {e}")),
+                Err(e) => return Err(Error::transport(format!("自动登录后取 guid 失败: {e}"))),
             },
         };
         Ok(FastSuccess {
@@ -160,17 +167,17 @@ impl Client {
         let send_json = match self.get(&ep) {
             Ok(r) if r.status == 200 => match r.json() {
                 Ok(j) => j,
-                Err(e) => return Err(format!("手机推送解析失败: {e}")),
+                Err(e) => return Err(Error::parse(format!("手机推送解析失败: {e}"))),
             },
-            Ok(r) => return Err(format!("手机推送 HTTP {}", r.status)),
-            Err(e) => return Err(format!("手机推送请求失败: {e}")),
+            Ok(r) => return Err(Error::http(r.status, format!("手机推送 HTTP {}", r.status))),
+            Err(e) => return Err(Error::transport(format!("手机推送请求失败: {e}"))),
         };
         if resp::return_code(&send_json) != Some(RC_OK) {
-            return Err(resp::fail_reason_text(&send_json));
+            return Err(Error::rejected(resp::fail_reason_text(&send_json)));
         }
         let session_key = resp::data_str(&send_json, "pushMsgSessionKey").unwrap_or_default();
         if session_key.is_empty() {
-            return Err("手机推送未返回会话标识".to_string());
+            return Err(Error::rejected("手机推送未返回会话标识"));
         }
         Ok(session_key)
     }
@@ -180,7 +187,7 @@ impl Client {
         let ep = PushLogin::new(self.login_suffix(), session_key, guid);
         let r = self.get(&ep)?;
         if r.status != 200 {
-            return Err(format!("手机确认轮询状态码 {}", r.status));
+            return Err(Error::http(r.status, format!("手机确认轮询状态码 {}", r.status)));
         }
         let json = r.json()?;
         if resp::is_success(&json, &["ticket", "sndaId", "tgt"]) {

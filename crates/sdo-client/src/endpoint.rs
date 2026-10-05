@@ -49,7 +49,7 @@ impl Default for LoginApp {
 /// 游戏应用作用域：只在 SSO 换票及换票后附属请求时使用，按次传入。
 ///
 /// 它不是 [`Client`](crate::client::Client) 的成分——选区在拉表之后才确定，
-/// 且只有换票链需要它（默认 `100001900/-1` + `V3Launcher`，两腿版本号不同）。
+/// 且只有换票链需要它（默认 `100001900/-1` + `V3Launcher`，两个接口的版本号不同）。
 /// 用法：`Client::exchange(&ticket, &GameApp::new(area_id))`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameApp {
@@ -59,9 +59,9 @@ pub struct GameApp {
     pub scene: String,
     /// 本次换票的目标选区。
     pub area_id: String,
-    /// 第一腿（`getSsoAuthorization`）版本号。
+    /// `getSsoAuthorization` 用的版本号。
     pub auth_product_version: String,
-    /// 第二腿（`ssoAuthorizationLogin`）版本号。
+    /// `ssoAuthorizationLogin` 用的版本号。
     pub login_product_version: String,
 }
 
@@ -153,7 +153,7 @@ impl Suffix {
     }
 
     /// `ssoAuthorizationLogin` 后缀：无 `guid/tgt`，`epIp/runTimeId/channelId` 值为空，
-    /// 取换票第二腿版本号。
+    /// 取 `ssoAuthorizationLogin` 用的版本号。
     pub fn for_sso_login(id: &Identity, run_time_id: &str, game: &GameApp) -> Suffix {
         let mut s = Suffix::for_sso_authorization(id, run_time_id, game);
         s.ep_ip = String::new();
@@ -488,32 +488,6 @@ impl Endpoint for ServerJson {
     }
 }
 
-/// `getMessageFile`（`productVersion` 点号原样不编码）。
-pub struct MessageFile {
-    app_id: String,
-    area_id: String,
-}
-
-impl MessageFile {
-    pub fn new(app_id: impl Into<String>, area_id: impl Into<String>) -> MessageFile {
-        MessageFile {
-            app_id: app_id.into(),
-            area_id: area_id.into(),
-        }
-    }
-}
-
-impl Endpoint for MessageFile {
-    const HOST: &'static str = HOST_BSC;
-    const TIMEOUT: Timeout = Timeout::Download;
-    fn path(&self) -> String {
-        format!(
-            "/sdologin/getMessageFile?appId={}&areaId={}&locale={}&productId={}&productVersion={}",
-            self.app_id, self.area_id, LOCALE, PRODUCT_ID, LOGIN_PRODUCT_VERSION
-        )
-    }
-}
-
 /// 用户协议（可选；`appid` 取登录应用）。
 pub struct Agreement {
     app_id: String,
@@ -802,14 +776,6 @@ mod tests {
     #[test]
     fn aux_templates_keep_raw_dots() {
         let s = Suffix::login(&id(), RTID, &login_app());
-        assert_eq!(
-            MessageFile::new(LOGIN_APP_ID, "1").path(),
-            "/sdologin/getMessageFile?appId=791000814&areaId=1&locale=zh_CN&productId=4&productVersion=1.1.344.45"
-        );
-        assert_eq!(
-            MessageFile::new(GAME_APP_ID, "8").path(),
-            "/sdologin/getMessageFile?appId=100001900&areaId=8&locale=zh_CN&productId=4&productVersion=1.1.344.45"
-        );
         let fv = FaceVerify::new(
             "88440FF9DD5D5C6819D6D4652279A1BC:4F2A1C7E9B0D3568A1E4C7F02B9D6E31:",
             LOGIN_APP_ID,

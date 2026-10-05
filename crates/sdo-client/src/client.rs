@@ -1,18 +1,20 @@
-//! 最小 HTTP 传输层 + 会话客户端。传输口径见 `DESIGN.md` 第 5 节。
+//! 最小 HTTP 传输层 + 会话客户端。
 //!
-//! - 每请求新建内核（禁止复用），`Host / User-Agent / Accept` 三行头，禁 `Referer`，
-//!   Cookie jar 禁用（只取 `CODEKEY`，见 [`crate::resp`]）。
+//! - HTTP 客户端按超时种类缓存（连接不复用），固定 `Host / User-Agent / Accept` 三行头，
+//!   不设 `Referer`，Cookie jar 禁用（只取 `CODEKEY`，见 [`crate::resp`]）。
 //! - 成功条件（仅 `HTTP 200`；`200 + return_code != 0` 按失败走各自分支）由各业务方法判定，
-//!   本层只透传状态码与原文；日志脱敏由调用方经 `proto::log::sanitize` 处理。
+//!   本层只透传状态码与原文。
+//! - 错误分类见 [`Error`]；面向用户的错误不带 query，完整 URL 只写入日志。
 
-use std::net::ToSocketAddrs;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use proto::consts::{ACCEPT, TIMEOUT_AUTH_MS, TIMEOUT_DOWNLOAD_MS, UA};
+use proto::log;
 
 use crate::endpoint::{Endpoint, LoginApp};
 
-pub type Result<T> = std::result::Result<T, String>;
+pub use crate::error::{Error, Result};
 
 #[derive(Debug)]
 pub struct Resp {
@@ -27,7 +29,7 @@ impl Resp {
     }
 
     pub fn json(&self) -> Result<serde_json::Value> {
-        serde_json::from_slice(&self.body).map_err(|e| format!("JSON 解析失败: {e}"))
+        serde_json::from_slice(&self.body).map_err(|e| Error::parse(format!("JSON 解析失败: {e}")))
     }
 
     /// 大小写不敏感的响应头取值（同名多值全部返回）。
@@ -128,53 +130,75 @@ impl Client {
     }
 }
 
-/// 供后台 fire-and-forget 线程直接调用的原生传输（调用方持有已拼好的三元组）。
-pub(crate) fn fetch(host: &str, path_query: &str, timeout: Timeout) -> Result<Resp> {
-    match (host, 443u16).to_socket_addrs() {
-        Ok(mut it) => {
-            if it.next().is_none() {
-                return Err(format!("网络异常，域名无法解析：{host}"));
-            }
-        }
-        Err(e) => return Err(format!("网络异常，域名无法解析：{host}（{e}）")),
+/// HTTP 客户端：按超时种类各缓存一个。
+///
+/// 不每次请求新建：`reqwest::blocking::Client` 每构造一个都会创建一个线程运行 tokio
+/// runtime，按每秒一次轮询会造成线程反复创建销毁。连接不复用由
+/// `pool_max_idle_per_host(0)` 保证，缓存的只是这个线程与 TLS 配置。
+fn http_client(timeout: Timeout) -> Result<&'static reqwest::blocking::Client> {
+    static AUTH: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    static DOWNLOAD: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    let cell = match timeout {
+        Timeout::Auth => &AUTH,
+        Timeout::Download => &DOWNLOAD,
     };
-
-    let ms = timeout.ms();
-    // 每次新建内核（禁止复用）：连接池上限置 0，且内核随本次请求结束释放，
-    // 等价 `FRESH_CONNECT + FORBID_REUSE`（服务端回 keep-alive 也主动关）。
-    // SAFETY: 认证链自签，服务端证书无法通过系统根校验，关闭校验是登录必需。
-    let inner = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_millis(ms))
+    if let Some(c) = cell.get() {
+        return Ok(c);
+    }
+    let built = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_millis(timeout.ms()))
         .pool_max_idle_per_host(0)
-        // Cookie jar 默认禁用：不保存不回送任何 Cookie。
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
         .no_proxy()
         .build()
-        .map_err(|e| format!("HTTP 客户端初始化失败: {e}"))?;
+        .map_err(|e| Error::transport(format!("HTTP 客户端初始化失败: {e}")))?;
+    // 并发首次调用时可能已有其他线程完成初始化；使用已有的，丢弃本次构造的。
+    let _ = cell.set(built);
+    cell.get()
+        .ok_or_else(|| Error::transport("HTTP 客户端初始化失败"))
+}
+
+/// 用户可见的 URL：去掉 query（票据与设备指纹都在里面）。
+fn display_url(host: &str, path_query: &str) -> String {
+    match path_query.split_once('?') {
+        Some((path, _)) => format!("https://{host}{path}"),
+        None => format!("https://{host}{path_query}"),
+    }
+}
+
+/// 底层传输函数：供后台线程直接调用，参数是已拼好的 host、path 与超时。
+pub(crate) fn fetch(host: &str, path_query: &str, timeout: Timeout) -> Result<Resp> {
+    let ms = timeout.ms();
+    let inner = http_client(timeout)?;
 
     let url = format!("https://{host}{path_query}");
-    // 顺序即第 5 节要求的三行头顺序：Host / User-Agent / Accept。
+    let url_display = display_url(host, path_query);
+
     let mut self_headers = reqwest::header::HeaderMap::new();
     self_headers.insert(
         reqwest::header::HOST,
-        reqwest::header::HeaderValue::from_str(host).map_err(|e| format!("非法 Host 头: {e}"))?,
+        reqwest::header::HeaderValue::from_str(host)
+            .map_err(|e| Error::transport(format!("非法 Host 头: {e}")))?,
     );
     self_headers.insert(
         reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_str(UA).map_err(|e| format!("非法 UA 头: {e}"))?,
+        reqwest::header::HeaderValue::from_str(UA)
+            .map_err(|e| Error::transport(format!("非法 UA 头: {e}")))?,
     );
     self_headers.insert(
         reqwest::header::ACCEPT,
         reqwest::header::HeaderValue::from_str(ACCEPT)
-            .map_err(|e| format!("非法 Accept 头: {e}"))?,
+            .map_err(|e| Error::transport(format!("非法 Accept 头: {e}")))?,
     );
     let req = inner
         .get(&url)
         .headers(self_headers)
         .timeout(Duration::from_millis(ms));
 
-    let resp = req.send().map_err(|e| format!("请求失败 {url}: {e}"))?;
+    let resp = req.send().map_err(|e| {
+        // reqwest 的 Display 自带 URL，只写日志；用户可见的用去掉 query 的版本。
+        log::debug(&format!("请求失败 {url}: {e}"));
+        Error::transport(format!("请求失败 {url_display}: {}", e.without_url()))
+    })?;
     let status = resp.status().as_u16();
     let headers = resp
         .headers()
@@ -188,7 +212,10 @@ pub(crate) fn fetch(host: &str, path_query: &str, timeout: Timeout) -> Result<Re
         .collect();
     let body = resp
         .bytes()
-        .map_err(|e| format!("读取响应体失败 {url}: {e}"))?
+        .map_err(|e| {
+            log::debug(&format!("读取响应体失败 {url}: {e}"));
+            Error::transport(format!("读取响应体失败 {url_display}: {}", e.without_url()))
+        })?
         .to_vec();
     Ok(Resp {
         status,
@@ -216,5 +243,39 @@ mod tests {
             crate::resp::extract_codekey(r.header_values("set-cookie")).unwrap(),
             "abc"
         );
+    }
+
+    /// 面向用户的 URL 不得带 query（票据/设备指纹都在里面）。
+    #[test]
+    fn display_url_drops_query() {
+        assert_eq!(
+            display_url("cas.sdo.com", "/authen/getGuid.json?codeKey=SECRET&guid=X"),
+            "https://cas.sdo.com/authen/getGuid.json"
+        );
+        assert_eq!(
+            display_url("cas.sdo.com", "/authen/getGuid.json"),
+            "https://cas.sdo.com/authen/getGuid.json"
+        );
+        assert!(!display_url("h", "/p?a=1").contains("a=1"));
+    }
+
+    /// 真实验证：全部 host 都通过链 + hostname 严格校验
+    /// （默认不跑，需网络：`cargo test -p sdo-client -- --ignored`）。
+    #[test]
+    #[ignore]
+    fn tls_strict_verification_works_for_all_hosts() {
+        let hosts = [
+            proto::consts::HOST_CAS,
+            proto::consts::HOST_N_CAS,
+            proto::consts::HOST_GFC,
+            proto::consts::HOST_UTILITY,
+            proto::consts::HOST_V3LAUNCHER,
+        ];
+        let client = http_client(Timeout::Auth).unwrap();
+        for host in hosts {
+            let r = client.get(format!("https://{host}/")).send();
+            // 状态码无所谓，握手通过即可。
+            assert!(r.is_ok(), "{host} 未通过严格 TLS 校验: {:?}", r.err());
+        }
     }
 }

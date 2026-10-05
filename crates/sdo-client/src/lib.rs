@@ -8,6 +8,7 @@
 //! - [`resp`]：响应解析与 `CODEKEY` 提取。
 //! - [`server`]：区服表解析与游戏命令行拼接（纯内存，无落盘）。
 //! - [`tickets`]：登录票据（T0）与游戏票据（T1）类型。
+//! - [`error`]：失败分类，上层的重试/回退只看 [`Error::is_retryable`]。
 //!
 //! 本库无状态（除 `Client` 持有的快照外）：不读写任何文件
 //! （`device.json/server.json` 落盘与回退由 EXE 侧完成），
@@ -17,6 +18,7 @@ pub mod areas;
 pub mod auxreq;
 pub mod client;
 pub mod endpoint;
+pub mod error;
 pub mod login;
 pub mod resp;
 pub mod server;
@@ -25,4 +27,5 @@ pub mod tickets;
 
 pub use client::{Client, Identity, Resp, Timeout};
 pub use endpoint::{GameApp, LoginApp};
+pub use error::{Error, Result};
 pub use tickets::{GameTicket, LoginTicket};
