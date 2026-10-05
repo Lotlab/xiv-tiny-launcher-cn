@@ -3,7 +3,7 @@
 use proto::device::Device;
 use proto::enc;
 use proto::log;
-use sdo_client::{GAME_APP, LOGIN_APP};
+use sdo_client::{GAME_APP_ID, LOGIN_APP};
 
 use crate::cli::Args;
 use crate::game::GameDirs;
@@ -94,7 +94,7 @@ pub fn run(
         run_time_id.to_owned(),
     );
     let login_app = sdo_client::LOGIN_APP;
-    let game_app = sdo_client::App::game("7");
+    let game_app = sdo_client::App::game(7);
 
     // QR 探测（不扫码）。
     let qr_probe = probe_qr(&mut api, &login_app);
@@ -158,7 +158,7 @@ pub fn run(
                 match crate::cmdline::Builder::new(a).build() {
                     Ok(base) => {
                         let ok = base.contains(&format!("-AreaID={} ", a.id))
-                            && base.starts_with(&format!("-AppID={} ", GAME_APP.app_id))
+                            && base.starts_with(&format!("-AppID={GAME_APP_ID} "))
                             && base.ends_with("DEV.MaxEntitledExpansionID=1");
                         all_ok &= ok;
                     }
@@ -277,7 +277,7 @@ fn check_sso_template(api: &sdo_client::Api, app: &sdo_client::App, target: &sdo
         && p.sso_authorization_login.contains("&runTimeId=&channelId=")
         && p.sso_authorization_login.contains(&format!(
             "productVersion={}",
-            enc::url_encode(GAME_APP.product_version)
+            enc::url_encode(target.product_version)
         ))
         && p.sso_authorization.contains(&format!(
             "productVersion={}",

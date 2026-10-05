@@ -430,7 +430,7 @@ impl Flow {
 
     /// 先于拿 guid 发出。
     fn pre_login(&mut self, api: &Api) {
-        self.spawn("agreement", api.agreement_request(&self.app));
+        self.spawn("agreement", api.agreement_request(self.app.app_id));
     }
 
     /// 登录后可后台发出的部分。

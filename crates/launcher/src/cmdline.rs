@@ -3,7 +3,7 @@
 
 use proto::log;
 use sdo_client::server::SubArea;
-use sdo_client::GAME_APP;
+use sdo_client::GAME_APP_ID;
 
 use crate::error::{Error, Result};
 
@@ -36,7 +36,7 @@ impl<'a> Builder<'a> {
             .expect("missing_keys 已保证 Lobby 入口存在");
         Ok(format!(
             "-AppID={} -AreaID={} Dev.LobbyHost01={} Dev.LobbyPort01={} Dev.GMServerHost={} Dev.SaveDataBankHost={} resetConfig={} DEV.MaxEntitledExpansionID=1",
-            GAME_APP.app_id, area.id, host, port, meta.gm_host, meta.sdb_host, meta.reset_config
+            GAME_APP_ID, area.id, host, port, meta.gm_host, meta.sdb_host, meta.reset_config
         ))
     }
 }
@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn base_matches_frozen_instance() {
         let t = table();
-        let base = Builder::new(t.find("7").unwrap()).build().unwrap();
+        let base = Builder::new(t.find(7).unwrap()).build().unwrap();
         assert_eq!(
             base,
             "-AppID=100001900 -AreaID=7 Dev.LobbyHost01=ffxivlobby07.ff14.sdo.com Dev.LobbyPort01=54994 \
@@ -70,7 +70,7 @@ DEV.MaxEntitledExpansionID=1"
     fn missing_meta_key_aborts_without_field_names() {
         let text = r#"{"data":{"areaInfos":[{"subArea":[{"id":"9","name":"x","open":1,"status":"空闲","domain":"","meta":"{\"Dev.LobbyHost01\":\"h\"}"}]}]}}"#;
         let t = parse_server_json(text).unwrap();
-        let err = Builder::new(t.find("9").unwrap()).build().unwrap_err();
+        let err = Builder::new(t.find(9).unwrap()).build().unwrap_err();
         let text = err.to_string();
         assert!(text.contains("大区 9"), "{text}");
         assert!(!text.contains("Dev."), "{text}");

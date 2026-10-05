@@ -1,16 +1,11 @@
 //! 接口端点：每个服务端 API 是一个结构体，query 拼接只发生在其 `path()` 内部。
 //!
-//! 模板来自抓包，并与线上 `0.0.0.26` 的 `SdoBaseClient.dll` 逐字核对过：`groupId`
-//! 在 `areaId` 之后、`appIdSite` 之前（`fastInLogin`/`getSystemConfig` 用不带它的那条）；
-//! `scene` 在 `epName` 之后（两个 SSO 请求共用，第二腿只把 `epIp`/`runTimeId`/`channelId`
-//! 传空）；`channelId` 在基模板末位，`productVersion` 与 `tag` 是之后单独追加的两段。
-//! 本地 `Launcher3Modules` 那份是 `0.0.0.18`（无 `groupId`/`channelId`），不要拿它当基准。
+//! 模板与线上 `0.0.0.26` 的 `SdoBaseClient.dll` 逐字核对过。注意本地
+//! `Launcher3Modules` 那份是 `0.0.0.18`（无 `groupId`/`channelId`），别拿它当基准。
 //!
 //! - [`Endpoint`]：`HOST` + `TIMEOUT` + `path()`；[`Client`](crate::client::Client)
 //!   只接受端点，不再有四处拼接 query 字符串的自由函数。
 //! - [`Suffix`]：公共后缀（字段顺序即拼装顺序），各端点持有它拼出完整 `path?query`。
-
-use std::borrow::Cow;
 
 use crate::consts::*;
 use proto::enc;
@@ -27,53 +22,43 @@ pub trait Endpoint {
     fn path(&self) -> String;
 }
 
-/// 一个 App 的冻结口径：身份 + **它自己的一个**版本号。
+/// 一个 App 的冻结口径：身份 + 它自己的一个版本号。
 ///
-/// 冻结字面量用 `&'static str`、选区用 [`Cow`]，所以两个 App 各自就是一个常量：
-/// [`LOGIN_APP`] / [`GAME_APP`]。换票是「从当前 App 换到新的 App」，两步各取对应
-/// App 的版本号，见 `Suffix` 的 SSO 构造函数。
-///
-/// 没有 `app_site`：逆向 `SdoBaseClient.dll` 确认 `appIdSite` 与 `appId` 取同一处
-/// （模板里是两个 `%d`，但调用点推的是同一个字段），拼 query 时直接复用 `app_id`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 三个 id 是整数（官方模板里是 `%d`）；没有 `app_site` —— 逆向确认 `appIdSite`
+/// 与 `appId` 取同一处。换票是「从当前 App 换到新的 App」，两步各取对应的版本号。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct App {
-    pub app_id: &'static str,
-    pub group: &'static str,
-    /// 登录系模板的 `areaId`（固定 `1`）；游戏应用的选区由 [`App::game`] 填入。
-    pub area_id: Cow<'static, str>,
+    pub app_id: i32,
+    pub group: i32,
+    /// 登录系模板的 `areaId`（固定 `1`）；游戏应用是本次选区。
+    pub area_id: i32,
     /// `scene`；登录系模板不带（`None`）。
     pub scene: Option<&'static str>,
     /// 这个 App 自己的版本号。
     pub product_version: &'static str,
 }
 
-/// 登录应用（QR/push/fast/附属请求）。版本取启动器 SDO 客户端版本
-/// （官方包 `Launcher3Modules/sdologin/version.txt`）。
+/// 登录应用（QR/push/fast/附属请求）。版本出处：`Launcher3Modules/sdologin/version.txt`。
 pub const LOGIN_APP: App = App {
-    app_id: "791000814",
-    group: "1",
-    area_id: Cow::Borrowed("1"),
+    app_id: 791000814,
+    group: 1,
+    area_id: 1,
     scene: None,
     product_version: "1.1.344.45",
 };
 
-/// 游戏应用（SSO 换票）。`area_id` 留空：选区是运行时值（来自区服表），
-/// 完整口径用 [`App::game`] 构造；两个 SSO 接口的 `appId` 都取它。
-/// 版本取游戏侧 SDO SDK 的 `Base version`（官方包 `sdo/sdologin/version.txt`）。
-pub const GAME_APP: App = App {
-    app_id: "100001900",
-    group: "-1",
-    area_id: Cow::Borrowed(""),
-    scene: Some("V3Launcher"),
-    product_version: "1.9.7.18",
-};
+/// 游戏应用的 `appId`：区服表路径与 `-AppID=` 用它（那时选区还没定）。
+pub const GAME_APP_ID: i32 = 100001900;
 
 impl App {
-    /// 游戏应用 + 本次换票的目标选区。
-    pub fn game(area_id: impl Into<String>) -> App {
+    /// 游戏应用（SSO 换票）+ 本次选区。版本出处：`sdo/sdologin/version.txt` 的 Base version。
+    pub fn game(area_id: i32) -> App {
         App {
-            area_id: Cow::Owned(area_id.into()),
-            ..GAME_APP
+            app_id: GAME_APP_ID,
+            group: -1,
+            area_id,
+            scene: Some("V3Launcher"),
+            product_version: "1.9.7.18",
         }
     }
 }
@@ -189,7 +174,7 @@ impl Suffix {
         q.push_str("&locale=");
         q.push_str(LOCALE);
         q.push_str("&productId=");
-        q.push_str(PRODUCT_ID);
+        q.push_str(&PRODUCT_ID.to_string());
         q.push_str("&frameType=");
         q.push_str(FRAME_TYPE);
         q.push_str("&endpointOS=");
@@ -197,7 +182,7 @@ impl Suffix {
         q.push_str("&version=");
         q.push_str(VERSION);
         q.push_str("&customSecurityLevel=");
-        q.push_str(CUSTOM_SECURITY_LEVEL);
+        q.push_str(&CUSTOM_SECURITY_LEVEL.to_string());
         q.push_str("&deviceId=");
         q.push_str(&self.device_id);
         q.push_str("&thirdLoginExtern=");
@@ -353,7 +338,7 @@ impl Endpoint for CancelPush {
     }
 }
 
-/// `sendPushMessage.json`（`inputUserId` 按公共后缀编码规则编码；该请求**不带 `guid`**）。
+/// `sendPushMessage.json`（`inputUserId` 按公共后缀编码规则编码；官方不带 `guid`）。
 pub struct SendPush {
     suffix: Suffix,
     account: String,
@@ -474,9 +459,9 @@ pub struct ServerJson {
 }
 
 impl ServerJson {
-    pub fn new(app_id: impl Into<String>, millis: u128) -> ServerJson {
+    pub fn new(app_id: i32, millis: u128) -> ServerJson {
         ServerJson {
-            app_id: app_id.into(),
+            app_id: app_id.to_string(),
             millis,
         }
     }
@@ -499,9 +484,9 @@ pub struct Agreement {
 }
 
 impl Agreement {
-    pub fn new(app_id: impl Into<String>) -> Agreement {
+    pub fn new(app_id: impl std::fmt::Display) -> Agreement {
         Agreement {
-            app_id: app_id.into(),
+            app_id: app_id.to_string(),
         }
     }
 }
@@ -529,18 +514,18 @@ pub struct FaceVerifyInit {
 
 impl FaceVerifyInit {
     pub fn new(
-        device_id: impl Into<String>,
-        app_id: impl Into<String>,
-        area_id: impl Into<String>,
-        product_version: impl Into<String>,
-        tgt: impl Into<String>,
+        device_id: impl std::fmt::Display,
+        app_id: impl std::fmt::Display,
+        area_id: impl std::fmt::Display,
+        product_version: impl std::fmt::Display,
+        tgt: impl std::fmt::Display,
     ) -> FaceVerifyInit {
         FaceVerifyInit {
-            device_id: device_id.into(),
-            app_id: app_id.into(),
-            area_id: area_id.into(),
-            product_version: product_version.into(),
-            tgt: tgt.into(),
+            device_id: device_id.to_string(),
+            app_id: app_id.to_string(),
+            area_id: area_id.to_string(),
+            product_version: product_version.to_string(),
+            tgt: tgt.to_string(),
         }
     }
 }
@@ -650,7 +635,7 @@ mod tests {
     }
 
     fn game_app() -> App {
-        App::game("7")
+        App::game(7)
     }
 
     const RTID: &str = "6EC5EF3932F14524AEC4862361942649";
@@ -785,7 +770,7 @@ mod tests {
         let fv = FaceVerifyInit::new(
             "88440FF9DD5D5C6819D6D4652279A1BC:4F2A1C7E9B0D3568A1E4C7F02B9D6E31:",
             LOGIN_APP.app_id,
-            LOGIN_APP.area_id.clone(),
+            LOGIN_APP.area_id,
             LOGIN_APP.product_version,
             "ULSTGT-T0",
         )
@@ -821,7 +806,7 @@ mod tests {
     #[test]
     fn server_json_path_shape() {
         assert_eq!(
-            ServerJson::new(GAME_APP.app_id, 1759400000123).path(),
+            ServerJson::new(GAME_APP_ID, 1759400000123).path(),
             "/v3launcher/server/100001900/8847/server.json?time=1759400000123"
         );
     }

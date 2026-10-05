@@ -129,7 +129,7 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         args.policy(),
         args.method()?,
         sdo_client::LOGIN_APP,
-        sdo_client::App::game(area.id.as_str()),
+        sdo_client::App::game(area.id),
     );
     let mut session_ui = ui::TerminalUi::new(
         args.qr_render,
@@ -149,10 +149,11 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     };
 
     // 票据与大区参数直接交给子进程的环境块（游戏侧 DLL 只读），不再改本进程环境。
+    let area_id_text = area.id.to_string();
     let delivery = winproc::Delivery {
         ticket: &game_ticket.ticket,
         snda_id: &game_ticket.snda_id,
-        area_id: &area.id,
+        area_id: &area_id_text,
         base: &base,
     };
 
@@ -161,8 +162,8 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     println!("游戏已启动。");
 
     // 启动成功才记住大区。
-    if device.last_area_id.as_deref() != Some(area.id.as_str()) {
-        match device.set_last_area_id(&area.id, &paths::cwd_file(FILE_DEVICE)) {
+    if device.last_area_id.as_deref() != Some(area_id_text.as_str()) {
+        match device.set_last_area_id(&area_id_text, &paths::cwd_file(FILE_DEVICE)) {
             Ok(()) => println!("已记住大区 {}，下次默认使用", area.name),
             Err(e) => log::info(&format!("写 lastAreaId 失败（不影响启动）：{e}")),
         }

@@ -6,7 +6,7 @@ use proto::{log, paths};
 use crate::consts::FILE_SERVER;
 
 use sdo_client::server::{ServerTable, SubArea};
-use sdo_client::{Api, GAME_APP};
+use sdo_client::{Api, GAME_APP_ID};
 
 use crate::error::{Error, Result};
 use crate::ui;
@@ -14,7 +14,7 @@ use crate::ui;
 /// 拉取区服表；成功后覆盖写本地备份，失败回退本地缓存。
 pub fn fetch_table(api: &Api) -> Result<ServerTable> {
     // 表服务的身份取游戏应用。
-    match api.server_json(&GAME_APP) {
+    match api.server_json(GAME_APP_ID) {
         Ok(fetched) => {
             let file = paths::cwd_file(FILE_SERVER);
             if let Err(e) = paths::write_atomic(&file, &fetched.raw) {
@@ -50,36 +50,45 @@ pub fn resolve_area(
     arg: Option<&str>,
     last_area_id: Option<&str>,
 ) -> Result<AreaPick> {
-    if let Some(id) = arg {
-        return table.find(id).cloned().map(|a| AreaPick { area: a, from_last: false }).ok_or_else(|| {
+    // 文本来源（--area / lastAreaId）在这里解析成整数 id。
+    if let Some(raw) = arg {
+        let found = raw.trim().parse::<i32>().ok().and_then(|id| table.find(id));
+        return found.cloned().map(|a| AreaPick { area: a, from_last: false }).ok_or_else(|| {
             Error::msg(format!(
-                "--area {id} 不在区服表中（可用: {}）",
-                table
-                    .sub_areas
-                    .iter()
-                    .map(|a| a.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join("/")
+                "--area {raw} 不在区服表中（可用: {}）",
+                available(table)
             ))
         });
     }
-    if let Some(id) = last_area_id {
-        match table.find(id) {
+    if let Some(raw) = last_area_id {
+        match raw.trim().parse::<i32>().ok().and_then(|id| table.find(id)) {
             Some(a) => return Ok(AreaPick { area: a.clone(), from_last: true }),
             None => {
                 // 记住的大区已从区服表消失：只提示，回退菜单（不清除记录）
-                println!("上次的大区 [{id}] 不在当前区服表中，请重新选择");
+                println!("上次的大区 [{raw}] 不在当前区服表中，请重新选择");
             }
         }
     }
     let lines: Vec<String> = table.sub_areas.iter().map(|a| a.menu_line()).collect();
-    let allowed: Vec<String> = table.sub_areas.iter().map(|a| a.id.clone()).collect();
+    let allowed: Vec<String> = table.sub_areas.iter().map(|a| a.id.to_string()).collect();
     let picked = ui::pick_area(&lines, &allowed).ok_or_else(|| Error::msg("未选择子区，退出"))?;
-    table
-        .find(&picked)
+    picked
+        .trim()
+        .parse::<i32>()
+        .ok()
+        .and_then(|id| table.find(id))
         .cloned()
         .map(|a| AreaPick { area: a, from_last: false })
         .ok_or_else(|| Error::msg(format!("子区 {picked} 解析失败")))
+}
+
+fn available(table: &ServerTable) -> String {
+    table
+        .sub_areas
+        .iter()
+        .map(|a| a.id.to_string())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(test)]
@@ -98,7 +107,7 @@ mod tests {
     #[test]
     fn explicit_area_wins() {
         let pick = resolve_area(&table(), Some("8"), Some("7")).unwrap();
-        assert_eq!(pick.area.id, "8");
+        assert_eq!(pick.area.id, 8);
         assert!(!pick.from_last);
     }
 
@@ -106,7 +115,7 @@ mod tests {
     #[test]
     fn falls_back_to_remembered_area() {
         let pick = resolve_area(&table(), None, Some("7")).unwrap();
-        assert_eq!(pick.area.id, "7");
+        assert_eq!(pick.area.id, 7);
         assert!(pick.from_last);
     }
 
@@ -114,7 +123,7 @@ mod tests {
     #[test]
     fn unknown_area_is_rejected() {
         let t = table();
-        assert!(t.find("6").is_none(), "夹具里不应有 6 区");
+        assert!(t.find(6).is_none(), "夹具里不应有 6 区");
         assert!(
             resolve_area(&t, Some("6"), None).is_err(),
             "非法 --area 必须报错"

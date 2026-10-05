@@ -20,11 +20,12 @@ pub(crate) const ACCEPT: &str = "*/*";
 // 固定公共参数。
 pub(crate) const AUTHEN_SOURCE: &str = "1";
 pub(crate) const LOCALE: &str = "zh_CN";
-pub(crate) const PRODUCT_ID: &str = "4";
+pub(crate) const PRODUCT_ID: i32 = 4;
+// 下面三个在官方模板里是内联字面量，不是 `%d` 实参，故保持字符串。
 pub(crate) const FRAME_TYPE: &str = "1";
 pub(crate) const ENDPOINT_OS: &str = "1";
 pub(crate) const VERSION: &str = "21";
-pub(crate) const CUSTOM_SECURITY_LEVEL: &str = "2";
+pub(crate) const CUSTOM_SECURITY_LEVEL: i32 = 2;
 pub(crate) const THIRD_LOGIN_EXTERN: &str = "0";
 
 /// 服务端要求的 `tag` 取值。

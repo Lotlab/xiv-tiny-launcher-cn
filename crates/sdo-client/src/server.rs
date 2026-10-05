@@ -20,7 +20,7 @@ pub struct Meta {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubArea {
-    pub id: String,
+    pub id: i32,
     pub name: String,
     /// 非空时优先用它（形如 `host:port`），否则用 `meta` 里的 Lobby 入口。
     pub domain: String,
@@ -88,8 +88,17 @@ pub struct ServerTable {
 }
 
 impl ServerTable {
-    pub fn find(&self, area_id: &str) -> Option<&SubArea> {
+    pub fn find(&self, area_id: i32) -> Option<&SubArea> {
         self.sub_areas.iter().find(|a| a.id == area_id)
+    }
+}
+
+/// JSON 里 `id` 可能是数字也可能是数字串。
+fn id(v: &Value) -> Option<i32> {
+    match v.get("id") {
+        Some(Value::Number(n)) => n.as_i64().and_then(|n| i32::try_from(n).ok()),
+        Some(Value::String(s)) => s.trim().parse().ok(),
+        _ => None,
     }
 }
 
@@ -122,8 +131,12 @@ pub fn parse_server_json(text: &str) -> Result<ServerTable> {
         for sa in subs {
             let meta_raw = sa.get("meta").and_then(|m| m.as_str()).unwrap_or("");
             let meta = parse_meta(meta_raw);
+            let Some(id) = id(sa) else {
+                proto::log::debug("区服表里有子区缺少数字 id，已跳过");
+                continue;
+            };
             sub_areas.push(SubArea {
-                id: s(sa, "id"),
+                id,
                 name: s(sa, "name"),
                 domain: s(sa, "domain"),
                 meta,
@@ -164,14 +177,14 @@ mod tests {
     fn parse_and_menu() {
         let t = parse_server_json(FIXTURE).unwrap();
         assert_eq!(t.sub_areas.len(), 4);
-        let a7 = t.find("7").unwrap();
+        let a7 = t.find(7).unwrap();
         assert_eq!(a7.name, "猫小胖");
         assert_eq!(
             a7.lobby_endpoint().unwrap(),
             ("ffxivlobby07.ff14.sdo.com".into(), "54994".into())
         );
         // domain 非空的子区优先 domain
-        let a6 = t.find("6").unwrap();
+        let a6 = t.find(6).unwrap();
         assert_eq!(
             a6.lobby_endpoint().unwrap(),
             ("211.27.89.22".into(), "35560".into())

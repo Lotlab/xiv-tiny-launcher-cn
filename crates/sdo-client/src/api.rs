@@ -272,9 +272,10 @@ impl Api {
     // ── server.json ──
 
     /// 区服表（`v3launcher/server/{appId}/8847/server.json`）：返回解析后的表 +
-    /// 服务端原文（缓存策略是调用方的事）。`app` 取游戏应用 —— 拉表早于选区确定。
-    pub fn server_json(&self, app: &App) -> Result<FetchedTable> {
-        let ep = ServerJson::new(app.app_id, proto::clock::now_millis());
+    /// 服务端原文（缓存策略是调用方的事）。取 [`GAME_APP_ID`](crate::GAME_APP_ID)
+    /// —— 拉表早于选区确定，给不出完整的 `App`。
+    pub fn server_json(&self, app_id: i32) -> Result<FetchedTable> {
+        let ep = ServerJson::new(app_id, proto::clock::now_millis());
         let r = self.get(&ep)?;
         if r.status != 200 {
             return Err(Error::http(r.status, "区服列表获取失败，请重试")
@@ -299,7 +300,7 @@ impl Api {
         let ep = FaceVerifyInit::new(
             self.identity.device_id.clone(),
             app.app_id,
-            app.area_id.clone(),
+            app.area_id,
             app.product_version,
             tgt,
         );
@@ -320,8 +321,8 @@ impl Api {
     // ── 附属请求：层 1 构造好（自持数据、不借 `Api`），层 2 决定何时/在哪个线程发 ──
 
     /// `agreement/user`：用户协议。
-    pub fn agreement_request(&self, app: &App) -> Request {
-        Request::new(Agreement::new(app.app_id))
+    pub fn agreement_request(&self, app_id: i32) -> Request {
+        Request::new(Agreement::new(app_id))
     }
 
     /// `getPromotionInfo.json`：活动信息（用 `tgt`）。
