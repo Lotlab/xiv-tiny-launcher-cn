@@ -17,6 +17,13 @@ pub(crate) const UA: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; Trident/7.0; rv:11.0) like Gecko sdologin-Launcher";
 pub(crate) const ACCEPT: &str = "*/*";
 
+/// 启动器 build id。
+///
+/// 区服表路径（`/v3launcher/server/{appId}/<build_id>/server.json`）与 CDN 的
+/// 版本/清单路径（`/v3launcher/build/.../<build_id>/...`）是**同一串**；
+/// 游戏本体更新后它会变，两处（这里与 `patcher::cdn::BUILD_ID`）必须同步。
+pub const BUILD_ID: &str = "8847";
+
 // 固定公共参数。
 pub(crate) const AUTHEN_SOURCE: &str = "1";
 pub(crate) const LOCALE: &str = "zh_CN";

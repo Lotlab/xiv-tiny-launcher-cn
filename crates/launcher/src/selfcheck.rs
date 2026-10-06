@@ -89,6 +89,45 @@ pub fn run(
         },
     );
 
+    // ── 更新相关 ──
+    let root = crate::game::resolve_root(args.game_dir.as_deref());
+    r.line("安装根", Verdict::Pass, &root.display().to_string());
+
+    match patcher::version::read_local(&root) {
+        Ok(Some(v)) => r.line(
+            "本地版本",
+            Verdict::Pass,
+            &format!(
+                "{}（internal={:?}，来源 {:?}）",
+                v.display, v.internal, v.source
+            ),
+        ),
+        Ok(None) => r.line("本地版本", Verdict::Skip, "无（全新安装）"),
+        Err(e) => r.line("本地版本", Verdict::Fail, &e.replace('\n', " ")),
+    }
+
+    if args.update_mode() == crate::cli::UpdateMode::Skip {
+        r.line("CDN 版本检查", Verdict::Skip, "已按 --no-update 跳过");
+    } else {
+        let game_id = GAME_APP_ID.to_string();
+        let checked = args.cdn().and_then(|cdn| {
+            patcher::check_update_with(&root, &cdn, &game_id, sdo_client::BUILD_ID)
+                .map_err(|e| e.to_string())
+        });
+        match checked {
+            Ok(o) => r.line(
+                "CDN 版本检查",
+                Verdict::Pass,
+                &format!(
+                    "CDN {} / 本地 {}",
+                    o.remote.display,
+                    o.local.as_ref().map(|l| l.display.as_str()).unwrap_or("无")
+                ),
+            ),
+            Err(e) => r.line("CDN 版本检查", Verdict::Fail, &e.replace('\n', " ")),
+        }
+    }
+
     let mut api = sdo_client::Api::new(
         sdo_client::Identity::from(device),
         run_time_id.to_owned(),

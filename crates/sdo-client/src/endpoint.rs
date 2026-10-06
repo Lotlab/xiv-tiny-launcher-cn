@@ -474,7 +474,7 @@ impl Endpoint for ServerJson {
     const TIMEOUT: Timeout = Timeout::Download;
     fn path(&self) -> String {
         format!(
-            "/v3launcher/server/{}/8847/server.json?time={}",
+            "/v3launcher/server/{}/{BUILD_ID}/server.json?time={}",
             self.app_id, self.millis
         )
     }

@@ -6,3 +6,4 @@
 *.log
 cacert.pem
 docs/SELFCHECK-output.txt
+/keys/

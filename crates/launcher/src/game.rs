@@ -23,57 +23,44 @@ impl GameDirs {
             None
         }
     }
+}
 
-    fn from_game_dir(game_dir: &Path) -> Option<GameDirs> {
-        let exe = game_dir.join(GAME_EXE);
-        if exe.is_file() {
-            Some(GameDirs {
-                game_dir: game_dir.to_path_buf(),
-                exe,
-            })
-        } else {
-            None
-        }
+/// `--game-dir` 的起点：绝对路径原样，相对路径接当前目录，缺省用 EXE 所在目录。
+fn start_dir(arg: Option<&Path>) -> PathBuf {
+    match arg {
+        Some(p) if p.is_absolute() => p.to_path_buf(),
+        Some(p) => std::env::current_dir().unwrap_or_default().join(p),
+        None => std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
     }
 }
 
 /// 定位游戏目录；失败返回可读错误。
 pub fn resolve(arg: Option<&Path>) -> Result<GameDirs, String> {
-    let start: PathBuf = match arg {
-        Some(p) => {
-            if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                std::env::current_dir().unwrap_or_default().join(p)
-            }
-        }
-        None => std::env::current_exe()
-            .ok()
-            .and_then(|e| e.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
-    };
-
-    if start.file_name().map(|n| n == GAME_SUBDIR).unwrap_or(false) {
-        if let Some(g) = GameDirs::from_game_dir(&start) {
-            return Ok(g);
-        }
+    let root = resolve_root(arg);
+    if let Some(g) = GameDirs::from_root(&root) {
+        return Ok(g);
     }
-    for cand in start.ancestors() {
-        if let Some(g) = GameDirs::from_root(cand) {
-            return Ok(g);
-        }
-    }
-    let root_candidate = start.join(GAME_SUBDIR);
-    if root_candidate.is_dir() {
+    let candidate = root.join(GAME_SUBDIR);
+    if candidate.is_dir() {
         return Err(format!(
             "找到 {} 但缺少 {GAME_EXE}，请用 --game-dir 指定正确的安装根",
-            root_candidate.display()
+            candidate.display()
         ));
     }
-    Err(format!(
-        "从 {} 上溯未找到含 {GAME_SUBDIR}/{GAME_EXE} 的安装根，请用 --game-dir 指定",
-        start.display()
-    ))
+    Err(match arg {
+        // 显式传参不会上溯，所以提示里也不提「上溯」。
+        Some(_) => format!(
+            "{} 下没有 {GAME_SUBDIR}/{GAME_EXE}，请用 --game-dir 指定安装根或 game 目录",
+            root.display()
+        ),
+        None => format!(
+            "从 {} 上溯未找到含 {GAME_SUBDIR}/{GAME_EXE} 的安装根，请用 --game-dir 指定",
+            root.display()
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -85,6 +72,39 @@ mod tests {
         let missing = std::env::temp_dir().join("xivtl-dir-that-does-not-exist");
         let err = resolve(Some(&missing)).unwrap_err();
         assert!(err.contains("--game-dir"), "{err}");
+    }
+
+    /// 显式 `--game-dir` 不上溯：祖先里有 `game/` 也不能抢走落点。
+    #[test]
+    fn resolve_root_does_not_walk_up_for_explicit_dir() {
+        let base = std::env::temp_dir().join(format!("xivtl-root-{}", std::process::id()));
+        let outer_game = base.join("game");
+        std::fs::create_dir_all(&outer_game).unwrap();
+        let fresh = base.join("FFXIV-new");
+        std::fs::create_dir_all(&fresh).unwrap();
+
+        // 全新安装的目标目录：不能被 <base>/game 劫持。
+        assert_eq!(resolve_root(Some(&fresh)), fresh);
+        // 指到 `<root>/game` 退回上一层。
+        assert_eq!(resolve_root(Some(&outer_game)), base);
+        // 指到 `<root>/game/ffxiv_dx11.exe` 也退回 <root>。
+        let exe = outer_game.join(GAME_EXE);
+        std::fs::write(&exe, b"x").unwrap();
+        assert_eq!(resolve_root(Some(&exe)), base);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 无参数时才上溯；这里只能直接测「给了参数就认参数」。
+    /// （无参数分支依赖 `current_exe()`，只能在集成环境里验证。）
+    #[test]
+    fn resolve_root_trusts_explicit_dir() {
+        let base = std::env::temp_dir().join(format!("xivtl-up-{}", std::process::id()));
+        let tools = base.join("tools");
+        std::fs::create_dir_all(base.join("game")).unwrap();
+        std::fs::create_dir_all(&tools).unwrap();
+        assert_eq!(resolve_root(Some(&tools)), tools);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -126,6 +146,43 @@ mod tests {
         assert!(verify_login_dll(&game, true).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// 定位安装根（含 `game/` 的目录）。
+///
+/// 与 [`resolve`] 不同，**不要求** `game/ffxiv_dx11.exe` 已存在——全新安装时
+/// 根目录下还没有 `game/`，更新阶段需要一个可写的落点。
+///
+/// - 显式 `--game-dir`：只认它本身（它指到 `game/` 或 exe 时退回上一层），
+///   **不上溯**——否则「装到别的目录」会被祖先目录里的 `game/` 劫持。
+/// - 无参数：从 EXE 所在目录上溯找含 `game/` 的目录，找不到就用 EXE 目录。
+pub fn resolve_root(arg: Option<&Path>) -> PathBuf {
+    let start = start_dir(arg);
+    // 指到 exe 上就退到它所在目录（那通常是 `game/`）。
+    let start = if start.is_file() {
+        start.parent().map(Path::to_path_buf).unwrap_or(start)
+    } else {
+        start
+    };
+
+    if arg.is_some() {
+        // `--game-dir <root>/game` → 用 <root>。
+        if start.file_name().map(|n| n == GAME_SUBDIR).unwrap_or(false) {
+            return start.parent().map(Path::to_path_buf).unwrap_or(start);
+        }
+        return start;
+    }
+
+    for cand in start.ancestors() {
+        if cand.join(GAME_SUBDIR).is_dir() {
+            return cand.to_path_buf();
+        }
+        // `cand` 自己就是 `game/`。
+        if cand.join(GAME_EXE).is_file() {
+            return cand.parent().unwrap_or(cand).to_path_buf();
+        }
+    }
+    start
 }
 
 /// 游戏实际读取登录 DLL 的路径。

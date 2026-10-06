@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 proto = { workspace = true }
 sdo-client = { workspace = true }
+patcher = { workspace = true }
 clap = { workspace = true }
 png = { workspace = true }
 
@@ -23,6 +24,7 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_System_StationsAndDesktops",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_Storage_FileSystem",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",

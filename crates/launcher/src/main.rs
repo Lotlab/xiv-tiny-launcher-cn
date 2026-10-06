@@ -8,6 +8,7 @@ mod cmdline;
 mod consts;
 mod error;
 mod game;
+mod proc;
 mod qr;
 mod qrimage;
 /// 原生二维码窗口只在 Windows 上有实现（见 `qrwindow`）。
@@ -17,6 +18,7 @@ mod qrwindow;
 mod selfcheck;
 mod single;
 mod ui;
+mod update;
 mod winproc;
 
 use clap::Parser;
@@ -95,13 +97,40 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     log::info(&format!("设备就绪，本机 IP {}", device.ep_ip));
 
     let run_time_id = enc::new_run_time_id();
-    let game = game::resolve(args.game_dir.as_deref());
+
+    // 安装根（不要求 `game/` 存在——全新安装时还没有）。
+    let root = game::resolve_root(args.game_dir.as_deref());
+    // 已安装时解析游戏目录；全新安装要等更新阶段建出 `game/`。
+    let game = game::resolve(args.game_dir.as_deref()).ok();
 
     if args.self_check {
-        return selfcheck::run(args, &device, &run_time_id, game.ok()).map_err(Error::msg);
+        return selfcheck::run(args, &device, &run_time_id, game).map_err(Error::msg);
     }
 
-    let game = game.map_err(Error::msg)?;
+    // 先做便宜的前置检查：目录已存在就立刻验登录组件，免得下完几十 GB
+    // 才发现 DLL 缺失。`--check-update` 只查版本，不碰这些。
+    let mut dll_checked = false;
+    if !args.check_update {
+        if let Some(g) = &game {
+            game::verify_login_dll(&g.game_dir, args.skip_dll_check).map_err(Error::msg)?;
+            dll_checked = true;
+        }
+    }
+
+    // 更新阶段（全新安装会在这里建出 `game/`）。
+    update::run(args, &root)?;
+    if args.check_update {
+        return Ok(());
+    }
+
+    // 更新可能刚建出 `game/`：全新安装要重新解析一次。
+    let game = match game {
+        Some(g) => g,
+        None => game::resolve(args.game_dir.as_deref()).map_err(Error::msg)?,
+    };
+    if !dll_checked {
+        game::verify_login_dll(&game.game_dir, args.skip_dll_check).map_err(Error::msg)?;
+    }
     println!("游戏目录：{}", game.game_dir.display());
 
     // 手机确认账号：`--account` 优先，否则用上次记住的。放在这里是为了在触网前就报错。
@@ -113,8 +142,6 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         account.clone(),
     );
     let method = args.method(last_chain, stored_account.as_deref())?;
-
-    game::verify_login_dll(&game.game_dir, args.skip_dll_check).map_err(Error::msg)?;
 
     // 尽早解析启动方式：缺兼容层时不必等扫码完再失败。
     let launcher = winproc::resolve_launcher(args.run_via.as_deref()).map_err(Error::msg)?;
@@ -170,6 +197,9 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     let mut child = winproc::launch(&game.exe, &game.game_dir, &delivery, launcher.as_ref())
         .map_err(Error::msg)?;
     println!("游戏已启动。");
+
+    // 启动成功：更新确实完成且游戏能跑起来，可以清掉临时目录。
+    update::cleanup_work(&root);
 
     // 启动成功才记住大区。
     if device.last_area_id.as_deref() != Some(area_id_text.as_str()) {

@@ -1,4 +1,4 @@
-//! 终端交互 + `sdo_client::Ui` 的实现：按键、状态行、选区菜单、二维码窗口。
+//! 终端交互 + `sdo_client::Ui` 的实现：按键、状态行、选区菜单、更新确认、二维码窗口。
 //!
 //! 除 `Keys` 外全部逻辑跨平台（`IsTerminal` + ANSI）。
 //! Windows 上用 `ReadConsoleInputW` 取单键，可以免回车按 k/q/Ctrl+C；
@@ -252,6 +252,41 @@ pub fn pick_area(menu_lines: &[String], allowed: &[String]) -> Option<String> {
     }
 }
 
+/// 交互式确认：打印 `body` 后问一句「是否现在更新？[Y/n]」。
+///
+/// 返回 `Some(true)` 确认、`Some(false)` 取消；`None` 表示**问不了**
+/// （stdin 不是终端，或读到了 EOF）——调用方据此中止并要求 `--yes`。
+/// 不设超时：没有输入就一直等，避免误触发几十 GB 的下载。
+pub fn confirm_update(body: &str) -> Option<bool> {
+    if !std::io::stdin().is_terminal() {
+        return None;
+    }
+    println!("{body}");
+    loop {
+        print!("是否现在更新？[Y/n]: ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        match parse_answer(&line) {
+            Some(v) => return Some(v),
+            None => println!("请输入 y 或 n（直接回车视为 y）：{}", line.trim()),
+        }
+    }
+}
+
+/// 解析确认回答：回车 / `y` / `yes` / `是` → 确认，`n` / `no` / `否` → 取消，
+/// 其他 → `None`（继续问）。
+fn parse_answer(line: &str) -> Option<bool> {
+    match line.trim().to_ascii_lowercase().as_str() {
+        "" | "y" | "yes" | "是" => Some(true),
+        "n" | "no" | "否" => Some(false),
+        _ => None,
+    }
+}
+
 /// EXE 侧的 [`sdo_client::Ui`] 实现：终端渲染 + 按键 + 二维码窗口。
 ///
 /// 轮询循环在 `sdo_client::Flow` 里，这里只负责"展示 + 干预"：
@@ -367,6 +402,26 @@ impl sdo_client::Ui for TerminalUi {
             sdo_client::Note::ExchangeFailed(reason) => {
                 println!("换票失败（{reason}），重新扫码登录…");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_answer;
+
+    #[test]
+    fn confirm_answer_parsing() {
+        // 回车视为确认（提示语写的就是 [Y/n]）。
+        assert_eq!(parse_answer("\n"), Some(true));
+        for s in ["y", "Y", " yes ", "是"] {
+            assert_eq!(parse_answer(s), Some(true), "{s:?}");
+        }
+        for s in ["n", "N", " No ", "否"] {
+            assert_eq!(parse_answer(s), Some(false), "{s:?}");
+        }
+        for s in ["q", "1", "yep"] {
+            assert_eq!(parse_answer(s), None, "{s:?}");
         }
     }
 }

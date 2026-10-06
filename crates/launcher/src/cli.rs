@@ -91,6 +91,39 @@ pub struct Args {
     #[arg(long = "skip-dll-check", action = ArgAction::SetTrue)]
     pub skip_dll_check: bool,
 
+    /// 只做版本检查（不下载、不登录）
+    #[arg(long = "check-update", action = ArgAction::SetTrue)]
+    pub check_update: bool,
+
+    /// 跳过更新阶段，直接登录（离线/调试用）
+    #[arg(
+        long = "no-update",
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["check_update", "force_full"]
+    )]
+    pub no_update: bool,
+
+    /// 跳过「是否现在更新」的确认提示（脚本/无人值守用）
+    #[arg(long = "yes", action = ArgAction::SetTrue)]
+    pub yes: bool,
+
+    /// 强制全量下载：校验并补齐所有文件（`--verify` 是它的别名）
+    #[arg(
+        long = "force-full",
+        visible_alias = "verify",
+        action = ArgAction::SetTrue,
+        conflicts_with = "check_update"
+    )]
+    pub force_full: bool,
+
+    /// CDN 跳过 TLS 证书校验
+    #[arg(long = "insecure-cdn", action = ArgAction::SetTrue)]
+    pub insecure_cdn: bool,
+
+    /// CDN 代理；**缺省直连**（CDN 对代理出口 IP 敏感，常报 403）
+    #[arg(long = "cdn-proxy", value_name = "url")]
+    pub cdn_proxy: Option<String>,
+
     /// 日志文件路径。
     #[arg(long, value_name = "path")]
     pub log_file: Option<PathBuf>,
@@ -104,7 +137,45 @@ pub struct Args {
     pub qr_out: Option<PathBuf>,
 }
 
+/// 更新阶段要做什么。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateMode {
+    /// 只检查后退出。
+    Check,
+    /// 不碰更新。
+    Skip,
+    /// 自动：检查 → 有更新就增量。
+    Auto,
+    /// 强制全量（校验 + 补齐）。
+    Full,
+}
+
 impl Args {
+    /// 更新阶段模式。
+    pub fn update_mode(&self) -> UpdateMode {
+        if self.check_update {
+            UpdateMode::Check
+        } else if self.no_update {
+            UpdateMode::Skip
+        } else if self.force_full {
+            UpdateMode::Full
+        } else {
+            UpdateMode::Auto
+        }
+    }
+
+    /// 构造 CDN 客户端（证书策略 + 代理）。
+    ///
+    /// 缺省**直连**：CDN 对代理出口 IP 敏感（本机 `https_proxy` 就曾被 403），
+    /// 需要代理时显式传 `--cdn-proxy`。
+    pub fn cdn(&self) -> Result<patcher::cdn::Cdn, String> {
+        let proxy = match self.cdn_proxy.as_deref() {
+            Some(p) => patcher::cdn::ProxyMode::Explicit(p),
+            None => patcher::cdn::ProxyMode::NoProxy,
+        };
+        patcher::cdn::Cdn::with_options(self.insecure_cdn, proxy).map_err(|e| e.to_string())
+    }
+
     /// 生效的手机确认账号：`--account` 优先，否则用上次记住的。
     pub fn account_or(&self, stored: Option<&str>) -> Option<String> {
         self.account
@@ -214,5 +285,48 @@ mod tests {
             "1000",
         ]);
         assert!(a.validate().is_err());
+    }
+
+    #[test]
+    fn update_mode_from_flags() {
+        assert_eq!(Args::parse_from(["x"]).update_mode(), UpdateMode::Auto);
+        assert_eq!(
+            Args::parse_from(["x", "--check-update"]).update_mode(),
+            UpdateMode::Check
+        );
+        assert_eq!(
+            Args::parse_from(["x", "--no-update"]).update_mode(),
+            UpdateMode::Skip
+        );
+        assert_eq!(
+            Args::parse_from(["x", "--force-full"]).update_mode(),
+            UpdateMode::Full
+        );
+        // `--verify` 是 `--force-full` 的别名
+        assert_eq!(
+            Args::parse_from(["x", "--verify"]).update_mode(),
+            UpdateMode::Full
+        );
+        // --no-update 与下载类开关互斥
+        assert!(Args::try_parse_from(["x", "--no-update", "--force-full"]).is_err());
+        assert!(Args::try_parse_from(["x", "--no-update", "--verify"]).is_err());
+        assert!(Args::try_parse_from(["x", "--no-update", "--check-update"]).is_err());
+        // --check-update 只查不下载，和全量开关互斥（否则会被静默忽略）
+        assert!(Args::try_parse_from(["x", "--check-update", "--force-full"]).is_err());
+        assert!(Args::try_parse_from(["x", "--check-update", "--verify"]).is_err());
+    }
+
+    #[test]
+    fn yes_defaults_to_off() {
+        assert!(!Args::parse_from(["x"]).yes);
+        assert!(Args::parse_from(["x", "--yes"]).yes);
+    }
+
+    #[test]
+    fn cdn_proxy_flag() {
+        let a = Args::parse_from(["x", "--cdn-proxy", "http://p:1", "--insecure-cdn"]);
+        assert_eq!(a.cdn_proxy.as_deref(), Some("http://p:1"));
+        assert!(a.insecure_cdn);
+        assert!(Args::parse_from(["x"]).cdn_proxy.is_none());
     }
 }

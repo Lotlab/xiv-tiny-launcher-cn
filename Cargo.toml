@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/proto", "crates/sdo-client", "crates/launcher", "crates/sdologinentry64"]
+members = ["crates/proto", "crates/sdo-client", "crates/patcher", "crates/launcher", "crates/sdologinentry64"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ license = "MIT"
 [workspace.dependencies]
 proto = { path = "crates/proto" }
 sdo-client = { path = "crates/sdo-client" }
+patcher = { path = "crates/patcher" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 md-5 = "0.10"
@@ -19,6 +20,13 @@ getrandom = "0.4"
 png = "0.17"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+quick-xml = "0.37"
+encoding_rs = "0.8"
+rsa = "0.9"
+url = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+rxdelta = { git = "https://github.com/Lotlab/rxdelta3", rev = "dce0dbf3c460c72f29d1346539a7a63fdba2d118" }
+time = { version = "0.3", features = ["formatting"] }
 windows-sys = "0.59"
 
 [profile.release]

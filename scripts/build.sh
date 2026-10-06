@@ -12,6 +12,20 @@ cd "$(dirname "$0")/.."
 
 TARGET=${TARGET:-${1:-}}
 
+# 打包密钥（见 crates/patcher/build.rs）：不进版本库，缺失即构建失败。
+#   keys/cdn_rsa_public.pem   CDN 鉴权 RSA 公钥（PEM）
+#   keys/meta_des.key         本地版本元数据 3DES 密钥（32 位 hex）
+# 也可直接用环境变量覆盖。
+resolve_key() {
+  local env_name=$1 file=$2 what=$3
+  if [ -n "${!env_name:-}" ]; then return 0; fi
+  if [ -f "$file" ]; then export "$env_name=$(cat "$file")"; return 0; fi
+  echo "缺少 $what：请设置 $env_name，或提供 $file（keys/ 已 gitignore）" >&2
+  return 1
+}
+resolve_key SDO_FFXIV_CDN_RSA_PUBLIC_KEY keys/cdn_rsa_public.pem "CDN RSA 公钥"
+resolve_key SDO_FFXIV_META_DES_KEY      keys/meta_des.key      "本地元数据 3DES 密钥"
+
 # 显式指定 gnu 时才要求 mingw gcc（链接器由该工具链提供；rustc 对 gnu 目标不自带链接器）。
 case "$TARGET" in
   *windows-gnu)
