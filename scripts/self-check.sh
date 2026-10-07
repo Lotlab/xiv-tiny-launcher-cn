@@ -8,9 +8,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-HOST_TARGET=$(rustc -vV | awk '/^host:/{print $2}')
-TARGET=${TARGET:-$HOST_TARGET}
-TRIPLE="$TARGET/"
+# 与 build.sh 同一套推导：显式 TARGET 才在 target/<三元组>/，否则裸构建在 target/。
+TARGET=${TARGET:-}
+TRIPLE=${TARGET:+"$TARGET/"}
 
 BIN=${1:-target/${TRIPLE}release/sdo-ffxiv-launcher.exe}
 if [ ! -f "$BIN" ]; then

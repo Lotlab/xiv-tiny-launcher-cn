@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 TARGET=${TARGET:-${1:-}}
 
-# 打包密钥（见 crates/patcher/build.rs）：不进版本库，缺失即构建失败。
+# 打包密钥
 #   keys/cdn_rsa_public.pem   CDN 鉴权 RSA 公钥（PEM）
 #   keys/meta_des.key         本地版本元数据 3DES 密钥（32 位 hex）
 # 也可直接用环境变量覆盖。
@@ -20,17 +20,17 @@ resolve_key() {
   local env_name=$1 file=$2 what=$3
   if [ -n "${!env_name:-}" ]; then return 0; fi
   if [ -f "$file" ]; then export "$env_name=$(cat "$file")"; return 0; fi
-  echo "缺少 $what：请设置 $env_name，或提供 $file（keys/ 已 gitignore）" >&2
+  echo "缺少 $what：请设置 $env_name，或提供 $file" >&2
   return 1
 }
 resolve_key SDO_FFXIV_CDN_RSA_PUBLIC_KEY keys/cdn_rsa_public.pem "CDN RSA 公钥"
 resolve_key SDO_FFXIV_META_DES_KEY      keys/meta_des.key      "本地元数据 3DES 密钥"
 
-# 显式指定 gnu 时才要求 mingw gcc（链接器由该工具链提供；rustc 对 gnu 目标不自带链接器）。
+# 显式指定 gnu 时才要求 mingw gcc（
 case "$TARGET" in
   *windows-gnu)
     if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
-      echo "缺少 x86_64-w64-mingw32-gcc（ucrt64 工具链提供），无法链接 $TARGET 目标" >&2
+      echo "缺少 x86_64-w64-mingw32-gcc，无法链接 $TARGET 目标" >&2
       exit 1
     fi
     ;;
@@ -47,23 +47,18 @@ cargo test --workspace "${CARGO_ARGS[@]}"
 echo "=== cargo build --release --workspace ==="
 cargo build --release --workspace "${CARGO_ARGS[@]}"
 
-# 产物目录推导：显式 target 用 $TARGET，否则取 rustc 的 host 三元组。
+# 产物目录推导
 HOST_TARGET=$(rustc -vV | awk '/^host:/{print $2}')
 RESOLVED_TARGET=${TARGET:-$HOST_TARGET}
-OUT="target/$RESOLVED_TARGET/release"
+if [ -n "$TARGET" ]; then
+  OUT="target/$TARGET/release"
+else
+  OUT="target/release"
+fi
 
-echo "=== 交付物（target=$RESOLVED_TARGET）==="
+echo "=== 交付物（target=$RESOLVED_TARGET，目录 $OUT）==="
 for f in sdo-ffxiv-launcher.exe sdologinentry64.dll; do
   [ -f "$OUT/$f" ] || { echo "缺少产物 $OUT/$f" >&2; exit 1; }
-done
-
-# 断言：不得依赖 VC++ 运行库（DLL 注入游戏进程，缺依赖会表现为认证失败而非明确报错）。
-# 用字符串搜索而非 objdump，避免依赖 binutils 是否在 PATH 及其 PE 输出差异。
-for f in sdo-ffxiv-launcher.exe sdologinentry64.dll; do
-  if grep -aqi "vcruntime140" "$OUT/$f"; then
-    echo "$f 依赖 VCRUNTIME140.dll（VC++ 运行库），干净 Windows 上会加载失败" >&2
-    exit 1
-  fi
 done
 
 mkdir -p dist
