@@ -107,7 +107,7 @@ pub struct Args {
     #[arg(long = "yes", action = ArgAction::SetTrue)]
     pub yes: bool,
 
-    /// 强制全量下载：校验并补齐所有文件（`--verify` 是它的别名）
+    /// 强制全量：先校验，再问是否下载补齐（`--verify` 是它的别名）
     #[arg(
         long = "force-full",
         visible_alias = "verify",
@@ -142,7 +142,7 @@ pub enum UpdateMode {
     Skip,
     /// 自动：检查 → 有更新就增量。
     Auto,
-    /// 强制全量（校验 + 补齐）。
+    /// 强制全量（先校验、再问是否下载，最后补齐）。
     Full,
 }
 

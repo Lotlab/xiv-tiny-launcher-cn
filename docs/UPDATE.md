@@ -19,7 +19,7 @@ crates/patcher/
 │   ├── auth.rs             v3ctrl.xml + RSA 公钥解密 + 鉴权 URL
 │   ├── filelist.rs         client_all_files_list.dat + 单文件 URL
 │   └── mod.rs              Cdn 客户端 + 下载（Range 续传 / size+MD5 校验）
-├── src/download.rs       下载编排（重试 + 鉴权刷新 + Progress）
+├── src/download.rs       全量校验计划 + 下载编排（重试 + 鉴权刷新 + Progress）
 ├── src/patch.rs          补丁链 / 补丁清单 / zip 解压 / delta 元数据
 ├── src/delta.rs          rxdelta 原地打补丁（delta/origin/result 三道 MD5 校验 + 幂等）
 └── src/update.rs         增量编排（多跳 → 链尾补齐 → 写版本）
@@ -64,8 +64,8 @@ crates/patcher/
 sdo-ffxiv-launcher                          # 默认：自动检查 → 有更新就增量 → 登录
 sdo-ffxiv-launcher --check-update           # 只检查后退出（与 --force-full / --no-update 互斥）
 sdo-ffxiv-launcher --no-update              # 跳过更新直接登录（离线/调试）
-sdo-ffxiv-launcher --yes                    # 跳过「是否现在更新」的确认（脚本/无人值守）
-sdo-ffxiv-launcher --force-full             # 强制全量（校验并补齐所有文件；--verify 是别名）
+sdo-ffxiv-launcher --yes                    # 跳过「是否现在更新」的询问（脚本/无人值守）
+sdo-ffxiv-launcher --force-full             # 强制全量：先校验、再问是否下载（--verify 是别名）
 sdo-ffxiv-launcher --insecure-cdn           # CDN 跳过 TLS 校验
 ```
 
@@ -73,7 +73,8 @@ sdo-ffxiv-launcher --insecure-cdn           # CDN 跳过 TLS 校验
 
 - **增量不做全量校验**：链尾只补「补丁声明要改但没打成功」和「目标清单里有、本地
   没有」的文件，外加 20 字节的 `game/ffxivgame.ver`（`read_local` 的回退值）。
-  全量校验（实测要读 ~118 GB）只由 `--force-full` / `--verify` 做。
+  全量校验（实测要读 ~118 GB）只出现在 `--force-full` / `--verify` 与「本地没有
+  internal 版本」的自动全量里，而且是**先校验、报出缺口，再问是否下载**。
 - **更新不阻断登录**：版本检查失败（CDN 抖动 / 403 / 证书）、增量链走不通
   （本地过旧 / CDN 无对应包，在下载前预演）、非交互式下无法确认更新，都只提示后
   继续登录；确认下载之后才发现 `ffxiv_dx11.exe` 在运行也只跳过本次更新（文件被占用），
@@ -94,21 +95,26 @@ NTFS ADS（含 `:`），落盘路径额外拒绝前导 `/`（`Path::join` 遇到
 
 ## 更新确认
 
-真正开始下载前会问一次「是否现在更新？[Y/n]」（增量与全量都问，`--force-full`
-也问）：
+**全量是「先校验、再询问、最后下载」**（`--force-full` / `--verify` 与自动更新里
+「本地没有 internal 版本」的全量分支都一样）：先把整份清单跟本地逐个比对 size + MD5
+（`patcher::verify_full_with`，实测要读 ~118 GB），打印「清单 N 个文件，本地通过 M 个，
+需下载 K 个（约 X GB）」，然后才问一次「是否现在更新？[Y/n]」。用户是先知道缺口多大
+再决定要不要下；全部通过就不问，直接写版本元数据收工（连 CDN 鉴权都不取）。
+增量更新不做全量校验，没有可先算的缺口，所以还是下载前问一次。
 
-- 回车 / `y` / `yes` / `是` → 开始更新；`n` / `no` / `否` → **跳过本次更新**，
+- 回车 / `y` / `yes` / `是` → 开始下载；`n` / `no` / `否` → **跳过本次更新**，
   照常登录（等价于 `--no-update`，游戏版本可能与服务器不一致）。
 - 不设超时：没有输入就一直等，避免误触发几十 GB 的下载。
-- `--yes` 直接放行，不再询问（脚本用）。
-- stdin 不是终端（管道 / 无人值守 / 双击）且没给 `--yes` 时：**自动更新**跳过本次更新
-  并继续登录（提示加 `--yes`），不会默默开始下载；`--force-full` 因为用户显式要求
-  全量，会中止并报错要求 `--yes`。
+- `--yes` 直接放行，不再询问（脚本用）；**校验照做**，缺多少照样打印。
+- stdin 不是终端（管道 / 无人值守 / 双击）且没给 `--yes` 时，闸门在**开始校验之前**
+  就给结论，不会白读一遍整份安装：**自动更新**跳过本次更新并继续登录（提示加
+  `--yes`）；`--force-full` 因为用户显式要求全量，会中止并报错要求 `--yes`。
 
 更新前会**预演增量链**（本地 internal → CDN 目标），链走不通就直接跳过更新继续登录，
-不会先让用户确认再失败。更新失败会中止（版本检查失败 / 链走不通 / 尚未开始下载的失败
-不中止，见上）；`--check-update` / `--self-check` 不做实际下载。更新前会检查
-`ffxiv_dx11.exe` 是否在跑（确认下载之后才查）；打 delta / 下 zip / 链尾补齐前会预检磁盘剩余空间。
+不会先让用户确认再失败（全量的「校验」也是同一种思路：先算清楚再问）。更新失败会中止
+（版本检查失败 / 链走不通 / 尚未开始下载的失败不中止，见上）；`--check-update` /
+`--self-check` 不做实际下载。更新前会检查 `ffxiv_dx11.exe` 是否在跑（确认下载之后才查）；
+打 delta / 下 zip / 链尾补齐前会预检磁盘剩余空间。
 
 ## 手工验证
 

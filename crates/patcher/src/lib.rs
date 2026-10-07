@@ -111,7 +111,81 @@ pub fn incremental_update_with(
     update::run_incremental(root, cdn, game_id, build_id, max_hops, progress)
 }
 
-/// 全量安装 / 修复：拉鉴权与文件清单，遍历下载。
+/// 全量校验计划 + 这次校验用的清单与远端版本（只读本地，不落盘、不下载）。
+///
+/// 「先校验、再问是否下载」：全量校验要把整份安装读一遍（实测 ~118 GB），
+/// 用户该先看到缺口有多大，再决定要不要下载（见 `docs/UPDATE.md`「更新确认」）。
+#[derive(Debug)]
+pub struct FullPlan {
+    /// 校验结果：清单总数 / 通过数 / 待下载数与字节数。
+    pub plan: download::Plan,
+    /// 这次校验用的文件清单。
+    list: cdn::filelist::FileList,
+    /// CDN 当前最新版本（执行计划时用它写本地元数据）。
+    remote: cdn::ver2::RemoteVersion,
+}
+
+impl FullPlan {
+    /// CDN 当前最新版本。
+    pub fn remote(&self) -> &cdn::ver2::RemoteVersion {
+        &self.remote
+    }
+}
+
+/// 全量校验（**不下载**）：拉清单并逐个比对本地文件，返回待下载计划。
+///
+/// 调用方拿到 [`FullPlan`] 后应该先汇总给用户，确认了再走 [`run_full_plan_with`]。
+pub fn verify_full_with(
+    root: &Path,
+    cdn: &cdn::Cdn,
+    game_id: &str,
+    build_id: &str,
+    progress: &mut dyn download::Progress,
+) -> Result<FullPlan, CheckError> {
+    let ver2 = cdn.fetch_ver2(game_id, build_id)?;
+    let remote = ver2.latest()?;
+    let list = cdn.fetch_file_list(game_id, build_id)?;
+    let plan = download::plan(root, &list, progress);
+    Ok(FullPlan {
+        plan,
+        list,
+        remote,
+    })
+}
+
+/// 执行全量校验计划：只下载 [`FullPlan::plan`] 里待补齐的文件，最后写加密版本元数据（提交点）。
+///
+/// 计划为空（本地与清单一字不差）时不取鉴权、不碰网络，直接提交版本元数据。
+pub fn run_full_plan_with(
+    root: &Path,
+    cdn: &cdn::Cdn,
+    game_id: &str,
+    build_id: &str,
+    full: FullPlan,
+    progress: &mut dyn download::Progress,
+) -> Result<download::Report, CheckError> {
+    let report = if full.plan.is_empty() {
+        download::Report {
+            total: full.plan.total,
+            skipped: full.plan.skipped,
+            ..Default::default()
+        }
+    } else {
+        let auth = cdn.fetch_auth(game_id)?;
+        let mut dl = download::Downloader::new(cdn, auth, game_id, 3);
+        dl.run_plan(root, &full.list, &full.plan, progress)
+            .map_err(CheckError::Cdn)?
+    };
+    // 提交点：写加密版本元数据（`ffxivgame.ver` 属于游戏文件，已随清单下载）。
+    update::write_meta(root, game_id, build_id, &full.remote, progress)
+        .map_err(|e| CheckError::Local(e.to_string()))?;
+    Ok(report)
+}
+
+/// 全量安装 / 修复：拉文件清单，遍历校验并下载（校验 + 下载一体）。
+///
+/// 等价于 [`verify_full_with`] 后接 [`run_full_plan_with`]；需要「先校验、再问
+/// 是否下载」的调用方请分开调那两个。
 pub fn full_download_with(
     root: &Path,
     cdn: &cdn::Cdn,
@@ -119,16 +193,8 @@ pub fn full_download_with(
     build_id: &str,
     progress: &mut dyn download::Progress,
 ) -> Result<download::Report, CheckError> {
-    let ver2 = cdn.fetch_ver2(game_id, build_id)?;
-    let remote = ver2.latest()?;
-    let auth = cdn.fetch_auth(game_id)?;
-    let list = cdn.fetch_file_list(game_id, build_id)?;
-    let mut dl = download::Downloader::new(cdn, auth, game_id, 3);
-    let report = dl.run(root, &list, progress).map_err(CheckError::Cdn)?;
-    // 提交点：写加密版本元数据（`ffxivgame.ver` 属于游戏文件，已随清单下载）。
-    update::write_meta(root, game_id, build_id, &remote, progress)
-        .map_err(|e| CheckError::Local(e.to_string()))?;
-    Ok(report)
+    let full = verify_full_with(root, cdn, game_id, build_id, progress)?;
+    run_full_plan_with(root, cdn, game_id, build_id, full, progress)
 }
 
 /// 版本检查：拉 CDN `ver2.dat`，与 `root/game` 下的本地版本比较。

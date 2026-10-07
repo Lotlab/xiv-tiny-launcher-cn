@@ -252,13 +252,20 @@ pub fn pick_area(menu_lines: &[String], allowed: &[String]) -> Option<String> {
     }
 }
 
+/// stdin 是否可交互（能问「是否现在更新？[Y/n]」）。
+///
+/// 调用方用它在**长校验之前**预判能不能问：问不了就别白读一遍整份安装（~118 GB）。
+pub fn can_confirm() -> bool {
+    std::io::stdin().is_terminal()
+}
+
 /// 交互式确认：打印 `body` 后问一句「是否现在更新？[Y/n]」。
 ///
 /// 返回 `Some(true)` 确认、`Some(false)` 取消；`None` 表示**问不了**
 /// （stdin 不是终端，或读到了 EOF）——调用方据此中止并要求 `--yes`。
 /// 不设超时：没有输入就一直等，避免误触发几十 GB 的下载。
 pub fn confirm_update(body: &str) -> Option<bool> {
-    if !std::io::stdin().is_terminal() {
+    if !can_confirm() {
         return None;
     }
     println!("{body}");
