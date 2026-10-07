@@ -87,9 +87,21 @@ pub struct Args {
     #[arg(long = "self-check", action = ArgAction::SetTrue)]
     pub self_check: bool,
 
-    /// 跳过登录组件检查
+    /// 跳过登录组件检查（含瞬时替换：传了它就不动游戏目录里的 DLL）
     #[arg(long = "skip-dll-check", action = ArgAction::SetTrue)]
     pub skip_dll_check: bool,
+
+    /// 瞬时 DLL 替换（默认开）：启动前换上自研 DLL，游戏加载完换回官方。
+    ///
+    /// 自研来源：--ours-dll > 启动器旁的 sdologinentry64.ours.dll > 编进 exe 的内嵌副本。
+    /// 等待方式：marker 文件握手（跨平台）+ 进程模块表（Windows）。
+    /// 失败时按 fail-safe 留自研在位，游戏照常能跑。
+    #[arg(long = "no-swap-dll", action = ArgAction::SetTrue)]
+    pub no_swap_dll: bool,
+
+    /// 自研 DLL 的来源路径（瞬时替换用）。
+    #[arg(long = "ours-dll", value_name = "path")]
+    pub ours_dll: Option<PathBuf>,
 
     /// 只做版本检查（不下载、不登录）
     #[arg(long = "check-update", action = ArgAction::SetTrue)]
@@ -215,6 +227,12 @@ impl Args {
         !self.no_keep_login
     }
 
+    /// 是否做瞬时替换：默认开；--no-swap-dll 或 --skip-dll-check 关
+    /// （后者沿旧语义：不动游戏目录里的 DLL）。
+    pub fn swap_dll(&self) -> bool {
+        !self.no_swap_dll && !self.skip_dll_check
+    }
+
     /// 参数合法性自检（不触网）。
     pub fn validate(&self) -> Result<(), String> {
         if self.poll_min_ms == 0 || self.poll_max_ms == 0 || self.poll_min_ms > self.poll_max_ms {
@@ -311,6 +329,26 @@ mod tests {
     fn yes_defaults_to_off() {
         assert!(!Args::parse_from(["x"]).yes);
         assert!(Args::parse_from(["x", "--yes"]).yes);
+    }
+
+    #[test]
+    fn swap_dll_defaults_on() {
+        // 默认开
+        let a = Args::parse_from(["x"]);
+        assert!(a.swap_dll());
+        assert!(a.ours_dll.is_none());
+        // --no-swap-dll 关
+        let b = Args::parse_from(["x", "--no-swap-dll", "--ours-dll", "C:\\o\\s.dll"]);
+        assert!(!b.swap_dll());
+        assert_eq!(
+            b.ours_dll,
+            Some(std::path::PathBuf::from("C:\\o\\s.dll"))
+        );
+        // --skip-dll-check 也关（沿旧语义：不动游戏目录里的 DLL）
+        let d = Args::parse_from(["x", "--skip-dll-check"]);
+        assert!(!d.swap_dll());
+        // 自检模式不启动游戏，swap 是否开都不影响自检
+        assert!(Args::parse_from(["x", "--self-check"]).validate().is_ok());
     }
 
     #[test]

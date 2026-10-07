@@ -41,13 +41,7 @@ if [ -n "$TARGET" ]; then
   CARGO_ARGS=(--target "$TARGET")
 fi
 
-echo "=== cargo test --workspace ${CARGO_ARGS[*]:-（默认工具链）} ==="
-cargo test --workspace "${CARGO_ARGS[@]}"
-
-echo "=== cargo build --release --workspace ==="
-cargo build --release --workspace "${CARGO_ARGS[@]}"
-
-# 产物目录推导
+# 产物目录推导（提前：DLL 要先编出来给 launcher 的 build.rs embed）
 HOST_TARGET=$(rustc -vV | awk '/^host:/{print $2}')
 RESOLVED_TARGET=${TARGET:-$HOST_TARGET}
 if [ -n "$TARGET" ]; then
@@ -55,6 +49,38 @@ if [ -n "$TARGET" ]; then
 else
   OUT="target/release"
 fi
+
+echo "=== cargo test --workspace ${CARGO_ARGS[*]:-（默认工具链）} ==="
+cargo test --workspace "${CARGO_ARGS[@]}"
+
+# 先编 Windows 登录 DLL：launcher 的 build.rs 会把它 embed 进 exe（瞬时替换的零附带文件来源）。
+# 本机 Windows：跟 TARGET 走（失败即停，与原来一致）；Linux 等宿主：尽力交叉编
+# windows-gnu（缺 mingw 时降级为不内嵌，不阻断，swap 请用 sidecar 模式）。
+DLL_TARGET="$RESOLVED_TARGET"
+case "$HOST_TARGET" in
+  *windows*) ;;
+  *) case "$RESOLVED_TARGET" in
+       *windows*) ;;
+       *) DLL_TARGET="x86_64-pc-windows-gnu" ;;
+     esac ;;
+esac
+if [ "$DLL_TARGET" = "$HOST_TARGET" ]; then
+  cargo build --release -p sdologinentry64 --target "$DLL_TARGET"
+  DLL_OUT="$OUT/sdologinentry64.dll"
+  export SDOLOGINENTRY64_DLL="$PWD/$DLL_OUT"
+  echo "=== embed DLL：$SDOLOGINENTRY64_DLL ==="
+else
+  if cargo build --release -p sdologinentry64 --target "$DLL_TARGET" 2>/dev/null \
+    && [ -f "target/$DLL_TARGET/release/sdologinentry64.dll" ]; then
+    export SDOLOGINENTRY64_DLL="$PWD/target/$DLL_TARGET/release/sdologinentry64.dll"
+    echo "=== embed DLL（交叉）：$SDOLOGINENTRY64_DLL ==="
+  else
+    echo "注意：Windows DLL 交叉构建失败，launcher 将不内嵌 DLL（swap 请用 sidecar 模式）" >&2
+  fi
+fi
+
+echo "=== cargo build --release --workspace ==="
+cargo build --release --workspace "${CARGO_ARGS[@]}"
 
 echo "=== 交付物（target=$RESOLVED_TARGET，目录 $OUT）==="
 for f in sdo-ffxiv-launcher.exe sdologinentry64.dll; do

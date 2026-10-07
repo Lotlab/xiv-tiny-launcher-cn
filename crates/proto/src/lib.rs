@@ -9,3 +9,4 @@ pub mod device;
 pub mod enc;
 pub mod log;
 pub mod paths;
+pub mod swap_marker;

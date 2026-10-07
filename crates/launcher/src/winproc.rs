@@ -12,8 +12,9 @@ use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 
-use proto::consts::{ENV_AREAID, ENV_BASE, ENV_SNDAID, ENV_TICKET};
+use proto::consts::{ENV_AREAID, ENV_BASE, ENV_SNDAID, ENV_SWAP, ENV_TICKET};
 use proto::log;
 
 /// `--run-via` 的环境变量等价形式。
@@ -126,12 +127,15 @@ fn is_executable(p: &Path) -> bool {
 /// 交接给游戏进程的环境变量（游戏侧 DLL 只读）。
 ///
 /// 由 `Command::envs` 直接写进子进程的环境块，不再改启动器自己的进程环境。
+/// `swap_nonce` 只在瞬时替换开启时设置：DLL 把它写进游戏目录的 marker 文件，
+/// 启动器据此确认加载完成（跨平台主信号，见 `proto::swap_marker`）。
 #[derive(Debug, Clone, Copy)]
 pub struct Delivery<'a> {
     pub ticket: &'a str,
     pub snda_id: &'a str,
     pub area_id: &'a str,
     pub base: &'a str,
+    pub swap_nonce: Option<&'a str>,
 }
 
 impl Delivery<'_> {
@@ -184,8 +188,11 @@ pub fn launch(
         None => Command::new(exe),
     };
     cmd.current_dir(game_dir);
-    // 只往子进程环境里"加"这四项，其余（PATH 等）照旧继承——兼容层也要靠 PATH。
+    // 只往子进程环境里"加"这几项，其余（PATH 等）照旧继承——兼容层也要靠 PATH。
     cmd.envs(delivery.pairs());
+    if let Some(nonce) = delivery.swap_nonce {
+        cmd.env(ENV_SWAP, nonce);
+    }
     // `base` 形如 `-AppID=… -AreaID=… Dev.LobbyHost01=…`，每个 token 内部不含空白，
     // 按空白拆成独立参数，与原先手工拼命令行、再由 CRT 分词的结果一致。
     cmd.args(delivery.base.split_whitespace());
@@ -200,6 +207,64 @@ pub fn launch(
             exe.display()
         )
     })
+}
+
+/// `spawn` 成功只代表进程创建成功，不代表游戏真正跑起来了
+/// （缺运行库 / DLL 被拦截 / wine 报错时游戏可能几百毫秒内就退出，
+/// 之前这里会误报“游戏已启动”）。
+///
+/// 调用方在打印成功文案前先调它：在 `grace` 内轮询 `try_wait`，
+/// 一旦发现子进程已退出就返回 `Err(EarlyExit)`；熬过 `grace` 仍活着才算成功。
+pub const HEALTH_GRACE: Duration = Duration::from_secs(5);
+const HEALTH_POLL: Duration = Duration::from_millis(100);
+
+/// grace 内就退出的子进程快照（调用方据此组装报错文案）。
+#[derive(Debug, Clone)]
+pub struct EarlyExit {
+    pub pid: u32,
+    pub after: Duration,
+    pub status: String,
+    pub code: Option<i32>,
+}
+
+/// 确认游戏进程熬过启动期。详见 [`HEALTH_GRACE`]。
+pub fn confirm_running(child: &mut Child, grace: Duration) -> Result<(), EarlyExit> {
+    confirm_running_while(child, grace, || {
+        crate::proc::is_running(crate::consts::GAME_EXE)
+    })
+}
+
+fn confirm_running_while(
+    child: &mut Child,
+    grace: Duration,
+    game_alive: impl Fn() -> bool,
+) -> Result<(), EarlyExit> {
+    let pid = child.id();
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // 兼容层（wine/umu）可能 fork 后 loader 先退：游戏本体还在就按成功算。
+                if game_alive() {
+                    return Ok(());
+                }
+                return Err(EarlyExit {
+                    pid,
+                    after: start.elapsed(),
+                    status: format!("{status}"),
+                    code: status.code(),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log::debug(&format!("确认游戏进程存活时 try_wait 失败：{e}"));
+            }
+        }
+        if start.elapsed() >= grace {
+            return Ok(());
+        }
+        std::thread::sleep(HEALTH_POLL.min(grace.saturating_sub(start.elapsed())));
+    }
 }
 
 #[cfg(test)]
@@ -262,6 +327,7 @@ mod tests {
             snda_id: "1234567890",
             area_id: "7",
             base: "-AppID=100001900 -AreaID=7 Dev.LobbyHost01=ffxivlobby07.ff14.sdo.com",
+            swap_nonce: Some("TESTNONCE"),
         };
         let mut child = launch(&exe, &game_dir, &delivery, Some(&layer)).unwrap();
         assert!(child.wait().unwrap().success());
@@ -288,6 +354,7 @@ mod tests {
             "SDO_FFXIV_SNDAID=1234567890",
             "SDO_FFXIV_AREAID=7",
             "SDO_FFXIV_BASE=-AppID=100001900 -AreaID=7 Dev.LobbyHost01=ffxivlobby07.ff14.sdo.com",
+            "SDO_FFXIV_SWAP=TESTNONCE",
         ] {
             assert!(
                 envs.contains(&want),
@@ -304,6 +371,7 @@ mod tests {
             snda_id: "S",
             area_id: "7",
             base: "-AppID=100001900 -AreaID=7 Dev.LobbyHost01=h",
+            swap_nonce: None,
         };
         assert!(ok.validate().is_ok());
 
@@ -345,5 +413,73 @@ mod tests {
         assert!(which_in("umu-run", Some(dir.as_os_str())).is_none());
         assert!(which_in("wine", None).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 秒退的子进程必须被拦住（携带退出码）。
+    ///
+    /// `game_alive` 传 `false`：单测不依赖本机有没有跑着 `ffxiv_dx11.exe`。
+    #[test]
+    fn confirm_running_reports_quick_exit() {
+        let mut child = quick_exit_child(3);
+        let err =
+            confirm_running_while(&mut child, Duration::from_secs(5), || false).unwrap_err();
+        assert_eq!(err.code, Some(3), "{err:?}");
+        assert_eq!(err.pid, child.id());
+        let _ = child.wait();
+    }
+
+    /// loader 先退但游戏本体还在（wine fork 形态）按成功算。
+    #[test]
+    fn confirm_running_passes_when_game_still_alive() {
+        let mut child = quick_exit_child(3);
+        assert!(confirm_running_while(&mut child, Duration::from_secs(5), || true).is_ok());
+        let _ = child.wait();
+    }
+
+    /// 活着的子进程必须通过确认（grace 到了还没退就算成功）。
+    #[test]
+    fn confirm_running_passes_alive_process() {
+        let mut child = sleep_child(10);
+        assert!(confirm_running_while(&mut child, Duration::from_millis(500), || false).is_ok());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// 快速退出 `code` 的子进程（Windows 用 `cmd`，Unix 用 `sh`）。
+    #[cfg(windows)]
+    fn quick_exit_child(code: u32) -> Child {
+        Command::new("cmd")
+            .args(["/C", &format!("exit {code}")])
+            .spawn()
+            .expect("cmd 应可用")
+    }
+
+    #[cfg(not(windows))]
+    fn quick_exit_child(code: u32) -> Child {
+        Command::new("sh")
+            .args(["-c", &format!("exit {code}")])
+            .spawn()
+            .expect("sh 应可用")
+    }
+
+    /// 睡 `secs` 秒的子进程（确认通过后由调用方 kill）。
+    #[cfg(windows)]
+    fn sleep_child(secs: u64) -> Child {
+        // `ping -n N` 约睡 N-1 秒；输出重定向到 NUL。
+        Command::new("cmd")
+            .args([
+                "/C",
+                &format!("ping -n {} 127.0.0.1 >NUL", secs.max(2) + 1),
+            ])
+            .spawn()
+            .expect("cmd 应可用")
+    }
+
+    #[cfg(not(windows))]
+    fn sleep_child(secs: u64) -> Child {
+        Command::new("sleep")
+            .arg(secs.to_string())
+            .spawn()
+            .expect("sleep 应可用")
     }
 }

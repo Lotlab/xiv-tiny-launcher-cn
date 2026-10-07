@@ -198,7 +198,8 @@ pub struct DllCheck {
     pub is_ours: bool,
 }
 
-fn has_build_marker(path: &Path) -> bool {
+/// 目标文件是否含自研构建标记（`dllswap` 复用，逻辑唯一）。
+pub(crate) fn dll_has_marker(path: &Path) -> bool {
     match std::fs::read(path) {
         Ok(bytes) => bytes
             .windows(DLL_BUILD_MARKER.len())
@@ -211,7 +212,7 @@ pub fn check_login_dll(game_dir: &Path) -> DllCheck {
     let path = login_dll_path(game_dir);
     let present = path.is_file();
     DllCheck {
-        is_ours: present && has_build_marker(&path),
+        is_ours: present && dll_has_marker(&path),
         path,
         present,
     }

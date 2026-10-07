@@ -6,6 +6,7 @@
 #![allow(non_snake_case)]
 
 mod consts;
+mod marker;
 mod state;
 mod vtable;
 mod win;
@@ -47,6 +48,8 @@ pub unsafe extern "system" fn SDOLInitialize(p_app_info: *mut c_void) -> i32 {
     if flag != 0x20 {
         return -1;
     }
+    // swap 握手：LoadLibrary 已返回，告诉启动器可以换回官方了（尽力而为）。
+    marker::notify_if_requested();
     0
 }
 
@@ -84,6 +87,7 @@ pub unsafe extern "system" fn SDOLGetModule(riid: *const Guid, ppv: *mut *mut c_
 #[no_mangle]
 pub extern "system" fn SDOLTerminal() -> i32 {
     ensure_log();
+    marker::clear_if_requested();
     state::clear_delivery_env();
     log::flush();
     0
