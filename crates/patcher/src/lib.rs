@@ -123,6 +123,8 @@ pub struct FullPlan {
     list: cdn::filelist::FileList,
     /// CDN 当前最新版本（执行计划时用它写本地元数据）。
     remote: cdn::ver2::RemoteVersion,
+    /// 备用 host（`ver2.backupBaseUrl`）：边缘拒绝时换 host 重试。
+    backup_host: Option<String>,
 }
 
 impl FullPlan {
@@ -144,12 +146,14 @@ pub fn verify_full_with(
 ) -> Result<FullPlan, CheckError> {
     let ver2 = cdn.fetch_ver2(game_id, build_id)?;
     let remote = ver2.latest()?;
+    let backup_host = ver2.backup_host();
     let list = cdn.fetch_file_list(game_id, build_id)?;
     let plan = download::plan(root, &list, progress);
     Ok(FullPlan {
         plan,
         list,
         remote,
+        backup_host,
     })
 }
 
@@ -172,7 +176,8 @@ pub fn run_full_plan_with(
         }
     } else {
         let auth = cdn.fetch_auth(game_id)?;
-        let mut dl = download::Downloader::new(cdn, auth, game_id, 3);
+        let mut dl =
+            download::Downloader::new(cdn, auth, game_id, 3).with_backup_host(full.backup_host);
         dl.run_plan(root, &full.list, &full.plan, progress)
             .map_err(CheckError::Cdn)?
     };

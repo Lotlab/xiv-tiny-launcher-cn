@@ -134,6 +134,12 @@ cargo run -p patcher --example incremental_info -- --from 0.0.0.27 --extract
 
 ## 已知点
 
+- **边缘 403 的处理**（实测结论）：GSLB 在多家边缘节点间轮换，偶发 403 与鉴权公式无关。
+  重试策略：只有 458（配置失效）才刷新鉴权重试；403/5xx 不刷新，
+  而是先用 HTTPDNS（`cdn/httpdns.rs`，公共 DoH 取全量边缘 IP，等价官方
+  `CURLOPT_RESOLVE` 的 pin 住轮换；DoH 不可用回退普通重连）换节点，
+  再按 10s/30s/60s 退避，并在主备 host（`ver2.backupBaseUrl`）之间轮换。
+  403 响应体长度会记进日志当指纹：17≈公式错 / 11≈时间戳旧（本机慢 >30 分钟）/ 0≈边缘拦截。
 - CDN 走**系统代理**：跟随 `http_proxy` / `https_proxy` 等环境变量（reqwest 默认），
   `no_proxy` 里的域名照常绕过，没有单独的代理开关
 - 全量是 ~118 GB；默认走增量（实测一跳只改 32 个文件 / 37 MB），全量只在全新安装/修复时用。

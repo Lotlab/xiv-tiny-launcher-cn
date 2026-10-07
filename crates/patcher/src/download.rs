@@ -102,6 +102,14 @@ pub fn is_encrypted_file(path: &str) -> bool {
     path.replace('\\', "/").eq_ignore_ascii_case(ENCRYPTED_META_REL)
 }
 
+/// 取 URL 的 host（日志用；解析失败时原样返回）。
+fn host_of(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_else(|| url.to_string())
+}
+
 /// 只校验不下载：逐个比对清单条目的 size + MD5，返回待下载计划。
 ///
 /// 全量校验要把整份安装读一遍（实测 ~118 GB，大文件算 MD5 很慢），所以调用方
@@ -136,13 +144,26 @@ pub fn plan(root: &Path, list: &filelist::FileList, progress: &mut dyn Progress)
     plan
 }
 
-/// 文件下载器：持有鉴权材料，鉴权过期时自行刷新。
+/// 文件下载器：持有鉴权材料，配置失效（458）时自行刷新。
+///
+/// 重试策略（与官方行为对齐，并覆盖多节点边缘抖动）：
+/// - `458`：CDN 配置失效 → 睡 1 秒 → 刷新鉴权 → 同 URL 重试；
+/// - `403`：边缘节点拒绝（鉴权本身无错）→ 重建连接（重新 DNS 解析，
+///   GSLB 轮换下可能落到另一个节点）→ 按 10s / 30s / 60s 退避 → 在主备
+///   host 之间轮换重试；
+/// - `5xx`：同 403 处理（可能是单节点故障）；
+/// - 其他错误（断线、校验失败等）：保持原有短退避（2s / 4s / 8s）重试。
 pub struct Downloader<'a> {
     cdn: &'a Cdn,
     auth: auth::CdnAuth,
     game_id: String,
     retries: u32,
+    backup_host: Option<String>,
 }
+
+/// 边缘拒绝（403）/ 服务端错误（5xx）的退避秒数：累计约 100 秒，
+/// 覆盖分钟级的边缘抖动窗口。
+const EDGE_BACKOFF_SECS: [u64; 3] = [10, 30, 60];
 
 impl<'a> Downloader<'a> {
     pub fn new(cdn: &'a Cdn, auth: auth::CdnAuth, game_id: impl Into<String>, retries: u32) -> Self {
@@ -151,7 +172,16 @@ impl<'a> Downloader<'a> {
             auth,
             game_id: game_id.into(),
             retries,
+            backup_host: None,
         }
+    }
+
+    /// 设置备用 host（来自 `ver2.backupBaseUrl`）：边缘拒绝时换 host 重试。
+    ///
+    /// 鉴权 hash 只覆盖 path，换 host 后鉴权仍然有效。
+    pub fn with_backup_host(mut self, host: Option<String>) -> Self {
+        self.backup_host = host;
+        self
     }
 
     pub fn auth(&self) -> &auth::CdnAuth {
@@ -163,16 +193,87 @@ impl<'a> Downloader<'a> {
         Ok(())
     }
 
-    /// 带鉴权拉一个小文件（补丁清单等），403 时刷新鉴权重试。
-    pub fn fetch_authed_bytes(&mut self, url: &str) -> Result<Vec<u8>, CdnError> {
+    /// 主备候选 URL：先主后备；相同/无备用时只有主。
+    fn candidates(&self, url: &str) -> Vec<String> {
+        let mut out = vec![url.to_string()];
+        if let Some(b) = self.backup_host.as_deref() {
+            let swapped = crate::cdn::swap_host(url, b);
+            if swapped != out[0] {
+                out.push(swapped);
+            }
+        }
+        out
+    }
+
+    /// 换节点：先用 HTTPDNS 拿全量边缘 IP 并 pin 住轮换，DoH 不可用时
+    /// 回退到普通重建连接（重新系统 DNS 解析）。
+    ///
+    /// 全程静默（终端提示由调用方的人话消息负责，技术细节记 debug 日志）；
+    /// 失败也不中断重试（沿用旧连接）。
+    fn reconnect(&self, url: &str) {
+        let host = host_of(url);
+        if self.cdn.refresh_pins(&host).is_err() {
+            proto::log::debug(&format!("HTTPDNS 解析 {host} 失败，重建普通连接"));
+            if let Err(e) = self.cdn.reconnect() {
+                proto::log::debug(&format!("重建 CDN 连接失败（沿用旧连接）：{e}"));
+            }
+        } else {
+            proto::log::debug(&format!("HTTPDNS 已切换 {host} 的边缘节点"));
+        }
+    }
+
+    /// 无 `Progress` 场景的同款换节点（`fetch_authed_bytes` 用，同样只记日志）。
+    fn repin(cdn: &Cdn, url: &str) {
+        let host = host_of(url);
+        match cdn.refresh_pins(&host) {
+            Ok(n) => proto::log::debug(&format!("HTTPDNS 解析 {host}：{n} 个边缘 IP")),
+            Err(e) => {
+                proto::log::debug(&format!("HTTPDNS 解析 {host} 失败（{e}），重建普通连接"));
+                if let Err(e) = cdn.reconnect() {
+                    proto::log::debug(&format!("重建 CDN 连接失败（沿用旧连接）：{e}"));
+                }
+            }
+        }
+    }
+
+    /// 边缘拒绝/服务端错误时的等待秒数（按已重试次数取档）。
+    fn edge_wait_secs(attempt: u32) -> u64 {
+        EDGE_BACKOFF_SECS[(attempt as usize).saturating_sub(1).min(EDGE_BACKOFF_SECS.len() - 1)]
+    }
+
+    /// 带鉴权拉一个小文件（补丁清单等），458 刷新重试，403 换节点退避重试。
+    ///
+    /// 终端只说人话（自动重试中），技术细节记 debug 日志。
+    pub fn fetch_authed_bytes(
+        &mut self,
+        url: &str,
+        progress: &mut dyn Progress,
+    ) -> Result<Vec<u8>, CdnError> {
+        let urls = self.candidates(url);
         let mut attempt = 0u32;
         loop {
-            match self.cdn.get_authed(&self.auth, url) {
+            let u = &urls[(attempt as usize) % urls.len()];
+            match self.cdn.get_authed(&self.auth, u) {
                 Ok(b) => return Ok(b),
                 Err(CdnError::AuthExpired { status }) if attempt < self.retries => {
                     attempt += 1;
-                    let _ = status;
+                    progress.note(&format!("下载配置更新，1 秒后自动重试（{attempt}/{}）", self.retries));
+                    proto::log::debug(&format!("补丁清单：CDN 配置失效 HTTP {status}，刷新鉴权后重试"));
+                    std::thread::sleep(std::time::Duration::from_secs(1));
                     self.refresh_auth()?;
+                }
+                Err(CdnError::EdgeRejected { status, body_len, .. })
+                    if attempt < self.retries =>
+                {
+                    attempt += 1;
+                    let wait = Self::edge_wait_secs(attempt);
+                    progress.note(&format!("下载受阻，{wait} 秒后自动重试（{attempt}/{}）", self.retries));
+                    proto::log::debug(&format!(
+                        "补丁清单：边缘拒绝 HTTP {status} 响应体 {body_len} 字节，换节点（{}）{wait}s 后重试",
+                        host_of(&urls[(attempt as usize) % urls.len()])
+                    ));
+                    Self::repin(self.cdn, u);
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
                 }
                 Err(e) => return Err(e),
             }
@@ -191,7 +292,9 @@ impl<'a> Downloader<'a> {
         self.fetch_url(&url, dest, entry.size, &entry.hash, &entry.path, progress)
     }
 
-    /// 下载任意 URL 到 `dest`（补丁 zip 等也走这里），含续传、校验、鉴权刷新与重试。
+    /// 下载任意 URL 到 `dest`（补丁 zip 等也走这里），含续传、校验、重试。
+    ///
+    /// 失败时在主备 host 间轮换、重建连接后按退避等待再试（见 [`Downloader`]）。
     pub fn fetch_url(
         &mut self,
         url: &str,
@@ -206,23 +309,56 @@ impl<'a> Downloader<'a> {
         }
 
         progress.file_start(label, size);
+        let urls = self.candidates(url);
         let mut attempt = 0u32;
         loop {
+            let u = &urls[(attempt as usize) % urls.len()];
             let mut on_progress = |done: u64| progress.file_progress(label, done, size);
             match self
                 .cdn
-                .download_file(&self.auth, url, dest, size, md5, &mut on_progress)
+                .download_file(&self.auth, u, dest, size, md5, &mut on_progress)
             {
                 Ok(_) => return Ok(FileOutcome::Downloaded),
                 Err(CdnError::AuthExpired { status }) if attempt < self.retries => {
                     attempt += 1;
-                    progress.note(&format!("鉴权过期（HTTP {status}），刷新后重试 {attempt} 次"));
+                    progress.note(&format!("下载配置更新，1 秒后自动重试（{attempt}/{}）", self.retries));
+                    proto::log::debug(&format!("{label}：CDN 配置失效 HTTP {status}，刷新鉴权后重试"));
+                    std::thread::sleep(std::time::Duration::from_secs(1));
                     self.refresh_auth()?;
+                }
+                Err(CdnError::EdgeRejected { status, body_len, .. })
+                    if attempt < self.retries =>
+                {
+                    attempt += 1;
+                    let wait = Self::edge_wait_secs(attempt);
+                    progress.note(&format!("下载受阻，{wait} 秒后自动重试（{attempt}/{}）", self.retries));
+                    proto::log::debug(&format!(
+                        "{label}：边缘拒绝 HTTP {status} 响应体 {body_len} 字节，换节点（{}）{wait}s 后重试",
+                        host_of(&urls[(attempt as usize) % urls.len()])
+                    ));
+                    self.reconnect(u);
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
+                }
+                Err(CdnError::Http { status, body_len, .. })
+                    if status >= 500 && attempt < self.retries =>
+                {
+                    // 服务端错误也可能是单节点故障：同样换节点 + 退避。
+                    attempt += 1;
+                    let wait = Self::edge_wait_secs(attempt);
+                    progress.note(&format!("下载受阻，{wait} 秒后自动重试（{attempt}/{}）", self.retries));
+                    proto::log::debug(&format!(
+                        "{label}：CDN 服务端错误 HTTP {status} 响应体 {body_len} 字节，换节点（{}）{wait}s 后重试",
+                        host_of(&urls[(attempt as usize) % urls.len()])
+                    ));
+                    self.reconnect(u);
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
                 }
                 Err(e) if attempt < self.retries => {
                     attempt += 1;
-                    progress.note(&format!("下载失败（{e}），重试 {attempt} 次"));
-                    std::thread::sleep(std::time::Duration::from_secs(1 << attempt));
+                    let wait = 1u64 << attempt;
+                    progress.note(&format!("下载出错，{wait} 秒后自动重试（{attempt}/{}）", self.retries));
+                    proto::log::debug(&format!("{label}：{e}，{wait}s 后重试"));
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
                 }
                 Err(e) => {
                     // 收尾状态行；错误仍照原样上抛。
@@ -409,5 +545,52 @@ mod tests {
         assert_eq!(rec.seen, vec!["game\\a.dat", "game\\b.dat"]);
         assert!(rec.ended);
         assert_eq!(plan.pending_files(), 2); // 两个文件都不存在
+    }
+
+    fn test_downloader(backup: Option<String>) -> Downloader<'static> {
+        // `Box::leak` 让 `&Cdn` 活到 `'static`，只为单测搭架子。
+        let cdn: &'static Cdn =
+            Box::leak(Box::new(Cdn::with_options(false, crate::cdn::ProxyMode::Env).unwrap()));
+        let auth = auth::CdnAuth {
+            project_md5_key: "P".into(),
+            referer_value: "UA".into(),
+            cdn_token: "T".into(),
+            config_flag: 2,
+        };
+        Downloader::new(cdn, auth, "100001900", 3).with_backup_host(backup)
+    }
+
+    #[test]
+    fn candidates_fall_back_to_backup_host() {
+        let dl = test_downloader(Some("backup.example".into()));
+        let got = dl.candidates("https://ff14.jijiagames.com/a/b.dat");
+        assert_eq!(
+            got,
+            vec![
+                "https://ff14.jijiagames.com/a/b.dat",
+                "https://backup.example/a/b.dat"
+            ]
+        );
+        // 无备用时只有主。
+        let dl = test_downloader(None);
+        assert_eq!(dl.candidates("https://h/x"), vec!["https://h/x"]);
+        // 备用与主相同 → 去重后只有主。
+        let dl = test_downloader(Some("h".into()));
+        assert_eq!(dl.candidates("https://h/x"), vec!["https://h/x"]);
+    }
+
+    #[test]
+    fn edge_backoff_covers_minutes() {
+        // 10s → 30s → 60s，之后保持 60s。
+        assert_eq!(
+            (1..=5).map(Downloader::edge_wait_secs).collect::<Vec<_>>(),
+            vec![10, 30, 60, 60, 60]
+        );
+    }
+
+    #[test]
+    fn host_of_extracts_host() {
+        assert_eq!(host_of("https://a.example:8443/x"), "a.example");
+        assert_eq!(host_of("not a url"), "not a url");
     }
 }

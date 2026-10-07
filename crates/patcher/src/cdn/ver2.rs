@@ -77,6 +77,11 @@ impl RemoteVersion {
 pub struct Ver2 {
     #[serde(rename = "baseUrl", default)]
     pub base_url: String,
+    /// 备用 base（`backupBaseUrl`）：主 host 被边缘拒绝时换 host 重试。
+    ///
+    /// 鉴权 hash 只覆盖 path，换 host 不影响鉴权有效性。
+    #[serde(rename = "backupBaseUrl", default)]
+    pub backup_base_url: String,
     #[serde(default)]
     pub areas: Vec<Area>,
     #[serde(default)]
@@ -98,6 +103,21 @@ impl Ver2 {
     /// `areas[0].max`。
     pub fn latest_internal(&self) -> Option<&str> {
         self.areas.first().map(|a| a.max.as_str()).filter(|s| !s.is_empty())
+    }
+
+    /// 备用 base 的 host：与主 base host 不同才返回（相同/缺失/非法则无备用）。
+    pub fn backup_host(&self) -> Option<String> {
+        let backup = self.backup_base_url.trim();
+        if backup.is_empty() {
+            return None;
+        }
+        let backup_url = url::Url::parse(backup).ok()?;
+        let backup_host = backup_url.host_str()?.to_string();
+        let base_url = url::Url::parse(self.base_url.trim()).ok()?;
+        if base_url.host_str() == Some(backup_host.as_str()) {
+            return None;
+        }
+        Some(backup_host)
     }
 
     /// 把 `to == internal` 的包挑出来，解析出 display/name。
@@ -180,6 +200,10 @@ mod tests {
     fn parses_and_picks_latest() {
         let v: Ver2 = serde_json::from_str(SAMPLE).unwrap();
         assert_eq!(v.base_url, "https://ff14.jijiagames.com/v3client/build/100001900/8847/diff");
+        assert_eq!(
+            v.backup_host().as_deref(),
+            Some("ff14traffic1.jijiagames.com")
+        );
         assert_eq!(v.latest_internal(), Some("0.0.0.29"));
         let latest = v.latest().unwrap();
         assert_eq!(latest.internal, "0.0.0.29");
@@ -201,5 +225,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v.latest(), Err(Ver2Error::NoPackageFor("0.0.0.30".into())));
+    }
+
+    #[test]
+    fn backup_host_only_when_different() {
+        let v: Ver2 = serde_json::from_str(SAMPLE).unwrap();
+        assert_eq!(
+            v.backup_host().as_deref(),
+            Some("ff14traffic1.jijiagames.com")
+        );
+        // 缺失 → 无备用。
+        let v: Ver2 = serde_json::from_str(r#"{"baseUrl":"https://h/diff"}"#).unwrap();
+        assert_eq!(v.backup_host(), None);
+        // 与主 host 相同 → 无备用（换了也落到同一批节点）。
+        let v: Ver2 = serde_json::from_str(
+            r#"{"baseUrl":"https://h/diff","backupBaseUrl":"https://h/other"}"#,
+        )
+        .unwrap();
+        assert_eq!(v.backup_host(), None);
+        // 非法 URL → 无备用。
+        let v: Ver2 = serde_json::from_str(
+            r#"{"baseUrl":"https://h/diff","backupBaseUrl":"not a url"}"#,
+        )
+        .unwrap();
+        assert_eq!(v.backup_host(), None);
     }
 }

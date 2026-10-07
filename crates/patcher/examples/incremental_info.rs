@@ -66,7 +66,7 @@ fn main() {
         let url = format!("{}{}", hop.base_url, hop.file_list_url);
         println!("\n[{}/{}] {} → {}", i + 1, chain.len(), hop.from, hop.to);
         println!("  清单 URL={}", url);
-        let bytes = match dl.fetch_authed_bytes(&url) {
+        let bytes = match dl.fetch_authed_bytes(&url, &mut Silent) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("  拉补丁清单失败：{e}");

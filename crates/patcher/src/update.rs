@@ -125,7 +125,7 @@ pub fn run_incremental(
     ));
 
     let auth = cdn.fetch_auth(game_id)?;
-    let mut dl = Downloader::new(cdn, auth, game_id, 3);
+    let mut dl = Downloader::new(cdn, auth, game_id, 3).with_backup_host(ver2.backup_host());
 
     let work = root.join("_update");
     let zip_dir = work.join("zips");
@@ -151,7 +151,7 @@ pub fn run_incremental(
 
         // 1) 补丁清单
         let full_url = format!("{}{}", hop.base_url, hop.file_list_url);
-        let bytes = dl.fetch_authed_bytes(&full_url)?;
+        let bytes = dl.fetch_authed_bytes(&full_url, progress)?;
         let pfl: PatchFileList =
             serde_json::from_slice(&bytes).map_err(|e| UpdateError::Json(e.to_string()))?;
         progress.note(&format!("  补丁包 {} 个", pfl.files.len()));
