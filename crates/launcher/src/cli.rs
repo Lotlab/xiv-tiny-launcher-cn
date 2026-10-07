@@ -173,7 +173,6 @@ impl Args {
     }
 
     /// 构造 CDN 客户端（证书策略 + 代理）。
-
     pub fn cdn(&self) -> Result<patcher::cdn::Cdn, String> {
         patcher::cdn::Cdn::with_options(self.insecure_cdn, patcher::cdn::ProxyMode::Env)
             .map_err(|e| e.to_string())

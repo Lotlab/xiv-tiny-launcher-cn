@@ -202,7 +202,6 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         .map_err(Error::msg)?;
     // `spawn` 成功只代表进程建出来了：缺运行库 / DLL 被拦截 / wine 报错时游戏可能
     // 几百毫秒内就退出。先确认熬过启动期，活着才报“已启动”，秒退直接报错。
-    let launch_at = std::time::Instant::now();
     let pid = child.id();
     if let Err(exit) = winproc::confirm_running(&mut child, winproc::HEALTH_GRACE) {
         let code_hint = match exit.code {

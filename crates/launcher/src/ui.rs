@@ -324,7 +324,7 @@ impl TerminalUi {
 }
 
 impl sdo_client::Ui for TerminalUi {
-    fn show_code(&mut self, png: &[u8], round: u32) {
+    fn show_code(&mut self, png: &[u8], _round: u32) {
         // 上一张码的窗口先关掉。
         self.window = None;
         let saved = match crate::qr::save_png_at(png, self.qr_out.as_deref()) {

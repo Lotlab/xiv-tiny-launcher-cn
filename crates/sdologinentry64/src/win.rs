@@ -63,6 +63,8 @@ pub fn readable(ptr: *const u8, len: usize) -> bool {
 }
 
 /// 读取宽字符串（上限 `max` 个字符），失败按空串。
+/// 仅测试使用：生产代码走 BSTR/环境变量路径，不直接读宽串。
+#[cfg(test)]
 pub fn read_wstr(ptr: *const u16, max: usize) -> String {
     if ptr.is_null() {
         return String::new();

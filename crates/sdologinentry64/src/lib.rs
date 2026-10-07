@@ -54,6 +54,9 @@ pub unsafe extern "system" fn SDOLInitialize(p_app_info: *mut c_void) -> i32 {
 }
 
 /// 按 IID 返回 Login / Info 对象。
+/// # Safety
+///
+/// `riid` 为空则返回失败；`ppv` 必须指向可写的 `*mut c_void`。
 #[no_mangle]
 pub unsafe extern "system" fn SDOLGetModule(riid: *const Guid, ppv: *mut *mut c_void) -> i32 {
     ensure_log();
