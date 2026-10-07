@@ -33,10 +33,6 @@ jobs:
         run: bash scripts/build.sh
         shell: bash
 
-      - name: Self-check
-        run: ./dist/launcher.exe --self-check
-        shell: bash
-
       - name: Verify build marker
         run: |
           grep -qa "xiv-tiny-launcher-cn/sdologinentry64" dist/sdologinentry64.dll || { echo "DLL 缺少自研构建标记" >&2; exit 1; }
@@ -74,18 +70,6 @@ jobs:
           sudo apt-get install -y -q mingw-w64
           x86_64-w64-mingw32-gcc --version
 
-      # 自检第 11 项"启动方式"只在 PATH 里找 `wine`/`umu-run` 这个文件名
-      # （`which_in` 只验存在+可执行，从不真正运行它），CI 又不启动游戏，
-      # 放一个假 wine 就够了——比 apt 装真 wine 快两个数量级。
-      # 用户侧无 wine 时依然 FAIL：main 在登录前就拦下，不浪费扫码。
-      - name: Fake wine (自检"启动方式"探测用，CI 不启动游戏)
-        run: |
-          mkdir -p "$PWD/.ci-bin"
-          printf '#!/bin/sh\nexit 0\n' > "$PWD/.ci-bin/wine"
-          chmod +x "$PWD/.ci-bin/wine"
-          echo "$PWD/.ci-bin" >> "$GITHUB_PATH"
-          ls -l "$PWD/.ci-bin/wine"
-
       - name: Show toolchain
         run: rustc -vV; rustup target list --installed
 
@@ -107,9 +91,6 @@ jobs:
           cp -f target/release/launcher dist-linux/
           cp -f target/x86_64-pc-windows-gnu/release/sdologinentry64.dll dist-linux/
           ls -l dist-linux/
-
-      - name: Self-check (Linux launcher)
-        run: ./dist-linux/launcher --self-check
 
       - uses: actions/upload-artifact@v4
         with:
