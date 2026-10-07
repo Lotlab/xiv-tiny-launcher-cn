@@ -61,12 +61,12 @@ crates/patcher/
 ## CLI
 
 ```sh
-sdo-ffxiv-launcher                          # 默认：自动检查 → 有更新就增量 → 登录
-sdo-ffxiv-launcher --check-update           # 只检查后退出（与 --force-full / --no-update 互斥）
-sdo-ffxiv-launcher --no-update              # 跳过更新直接登录（离线/调试）
-sdo-ffxiv-launcher --yes                    # 跳过「是否现在更新」的询问（脚本/无人值守）
-sdo-ffxiv-launcher --force-full             # 强制全量：先校验、再问是否下载（--verify 是别名）
-sdo-ffxiv-launcher --insecure-cdn           # CDN 跳过 TLS 校验
+launcher                          # 默认：自动检查 → 有更新就增量 → 登录
+launcher --check-update           # 只检查后退出（与 --force-full / --no-update 互斥）
+launcher --no-update              # 跳过更新直接登录（离线/调试）
+launcher --yes                    # 跳过「是否现在更新」的询问（脚本/无人值守）
+launcher --force-full             # 强制全量：先校验、再问是否下载（--verify 是别名）
+launcher --insecure-cdn           # CDN 跳过 TLS 校验
 ```
 
 ## 更新阶段的行为

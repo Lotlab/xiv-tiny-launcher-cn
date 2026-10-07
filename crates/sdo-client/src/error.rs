@@ -6,8 +6,7 @@
 //! - [`Error::detail`]：排查细节，只进日志（见 [`Error::log_text`]）。
 //!
 //! [`Display`](std::fmt::Display) 只输出 `user`，因此 `Error` 转成上层错误或直接
-//! `println!` 都不会泄漏细节；上层的重试、回退、放弃决策只看 [`Error::is_retryable`]，
-//! 不解析错误字符串。
+//! 上层的重试、回退、放弃决策只看 [`Error::is_retryable`]，
 
 /// 失败类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -19,7 +19,7 @@ pub enum QrRender {
 
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "sdo-ffxiv-launcher",
+    name = "launcher",
     version,
     about = "FFXIV CN（盛趣）自研启动器：纯 CLI + 终端二维码",
     disable_help_subcommand = true
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn keep_login_defaults_to_checked() {
-        let a = Args::parse_from(["sdo-ffxiv-launcher"]);
+        let a = Args::parse_from(["launcher"]);
         assert!(a.keep_login(), "默认勾选");
         assert_eq!(a.mode, Mode::Auto);
         assert_eq!(a.qr_timeout, 120);
@@ -270,15 +270,15 @@ mod tests {
 
     #[test]
     fn no_keep_login_is_unchecked() {
-        let a = Args::parse_from(["sdo-ffxiv-launcher", "--no-keep-login"]);
+        let a = Args::parse_from(["launcher", "--no-keep-login"]);
         assert!(!a.keep_login());
     }
 
     #[test]
     fn push_requires_account() {
-        let a = Args::parse_from(["sdo-ffxiv-launcher", "--mode", "push"]);
+        let a = Args::parse_from(["launcher", "--mode", "push"]);
         assert!(a.method(sdo_client::Chain::Qr, None).is_err());
-        let b = Args::parse_from(["sdo-ffxiv-launcher", "--mode", "push", "--account", "a@b.c"]);
+        let b = Args::parse_from(["launcher", "--mode", "push", "--account", "a@b.c"]);
         assert!(b.method(sdo_client::Chain::Qr, None).is_ok());
         // 上次记住的账号也算
         assert!(a.method(sdo_client::Chain::Qr, Some("a@b.c")).is_ok());
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn poll_window_validated() {
         let a = Args::parse_from([
-            "sdo-ffxiv-launcher",
+            "launcher",
             "--poll-min-ms",
             "1200",
             "--poll-max-ms",

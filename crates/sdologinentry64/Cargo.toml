@@ -3,7 +3,7 @@ name = "sdologinentry64"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "游戏侧 64 位 sdologinentry64.dll（无网络，只读 env 交接）"
+description = "sdologinentry"
 
 [lib]
 name = "sdologinentry64"

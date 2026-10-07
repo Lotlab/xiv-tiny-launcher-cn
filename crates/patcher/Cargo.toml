@@ -3,7 +3,7 @@ name = "patcher"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "FFXIV CN 游戏本体版本检查与增量更新（CDN 下载 / 差分包 / 本地版本元数据）"
+description = "FFXIV CN Patch Downloader"
 
 [dependencies]
 proto = { workspace = true }

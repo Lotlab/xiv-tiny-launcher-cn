@@ -236,8 +236,7 @@ pub fn verify_login_dll(game_dir: &Path, skip: bool) -> Result<DllCheck, String>
         (false, _) => {
             let msg = format!(
                 "未找到登录组件 {DLL_NAME}。\n\
-                 游戏实际加载路径：{}\n\
-                 把 {DLL_NAME} 复制到上述目录即可。",
+                 请将 {DLL_NAME} 复制到 {}。",
                 check.path.display()
             );
             if skip {

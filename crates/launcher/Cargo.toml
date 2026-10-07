@@ -3,10 +3,10 @@ name = "launcher"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "FFXIV CN 自研启动器 EXE（唯一网络发起方）"
+description = "FFXIV CN Launcher V3 in Rust"
 
 [[bin]]
-name = "sdo-ffxiv-launcher"
+name = "launcher"
 path = "src/main.rs"
 
 [dependencies]

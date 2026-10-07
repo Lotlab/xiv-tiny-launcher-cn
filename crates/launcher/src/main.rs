@@ -1,4 +1,4 @@
-//! `sdo-ffxiv-launcher` — FFXIV CN（盛趣）自研启动器。
+//! `launcher` — FFXIV CN（盛趣）自研启动器。
 //!
 //! 网络与流程都在 `sdo-client`（`Api` / `Flow`）；这里只做 UI、落盘、起进程。
 
@@ -56,7 +56,7 @@ fn main() {
 fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     args.validate()?;
 
-    println!("sdo-ffxiv-launcher {}", env!("CARGO_PKG_VERSION"));
+    println!("launcher {}", env!("CARGO_PKG_VERSION"));
     println!("日志：{}", log_path.display());
 
     let _guard = match single::acquire() {
@@ -75,7 +75,7 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
 
     let (mut device, created) = Device::load_or_create()?;
     if created {
-        println!("已生成新的设备档案 device.json");
+        println!("首次运行，生成新的 device.json");
     }
     let overridden = args.mac_id.is_some() || args.ep_name.is_some() || args.ep_ip.is_some();
     if let Some(v) = &args.mac_id {
@@ -149,20 +149,13 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
 
     // 尽早解析启动方式：缺兼容层时不必等扫码完再失败。
     let launcher = winproc::resolve_launcher(args.run_via.as_deref()).map_err(Error::msg)?;
-    if let Some(l) = &launcher {
-        println!("通过兼容层启动游戏：{l}");
-    }
-
     let mut api = sdo_client::Api::new(sdo_client::Identity::from(&device), run_time_id);
 
     // 区服表：拉取在层 1，缓存回退与落盘在这里。
     let table = areas::fetch_table(&api)?;
     let pick = areas::resolve_area(&table, args.area.as_deref(), device.last_area_id.as_deref())?;
-    let (area, from_last) = (pick.area, pick.from_last);
+    let (area, _) = (pick.area, pick.from_last);
     let base = cmdline::Builder::new(&area).build()?;
-    if from_last {
-        println!("使用上次的大区：{}；用 --area <id> 可临时更换", area.name);
-    }
     println!("已选定大区：{}", area.name);
     log::info(&format!("已选定大区 {}", area.name));
 
@@ -195,7 +188,6 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     let mut swap = None;
     if args.swap_dll() {
         let ours_src = dllswap::ours_source(args.ours_dll.as_deref());
-        println!("瞬时替换：正在换上自研登录组件…");
         swap = Some(dllswap::prepare(&game.game_dir, &ours_src).map_err(Error::msg)?);
     }
     let delivery = winproc::Delivery {
@@ -212,33 +204,30 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
     // 几百毫秒内就退出。先确认熬过启动期，活着才报“已启动”，秒退直接报错。
     let launch_at = std::time::Instant::now();
     let pid = child.id();
-    println!("已发出启动命令（pid {pid}），正在确认游戏进程…");
     if let Err(exit) = winproc::confirm_running(&mut child, winproc::HEALTH_GRACE) {
         let code_hint = match exit.code {
             Some(c) => format!("退出码 {c}"),
             None => exit.status.clone(),
         };
         return Err(Error::msg(format!(
-            "游戏进程已在 {:?} 内退出（pid {}，{code_hint}），没有真正跑起来。\n\
-             请检查：游戏路径与权限、DirectX/VC++ 运行库、登录组件是否被杀软拦截、兼容层（wine）报错；\n\
-             用 --stay 重跑可保留控制台查看完整过程，详情见日志。",
+            "游戏进程已在 {:?} 内退出（pid {}，{code_hint}）",
             exit.after, exit.pid,
         )));
     }
     println!("游戏已启动（pid {pid}）。");
     if !args.stay {
-        println!("启动器即将退出，游戏继续运行；若稍后发现游戏没窗口，请用 --stay 重跑以便查看报错。");
+        println!("启动器即将退出，游戏继续运行");
     }
 
     // 瞬时替换：等游戏加载完就把官方换回去（fail-safe：失败留自研在位）。
     if let Some(sw) = swap.as_mut() {
         let pid = child.id();
         let nonce = swap_nonce.as_deref().unwrap_or("");
-        println!("等待游戏加载登录组件（最多 {:?}）…", dllswap::WAIT_TIMEOUT);
+        println!("等待加载登录组件…");
         let alive = || child.try_wait().map(|e| e.is_none()).unwrap_or(true);
         match dllswap::wait_game_loaded(pid, &sw.sdo_dir, nonce, alive) {
             Ok(()) => match dllswap::restore(sw) {
-                Ok(()) => println!("已换回官方登录组件，游戏继续使用已加载的自研组件。"),
+                Ok(()) => println!("已换回官方登录组件"),
                 Err(e) => log::warn(&format!("换回官方 DLL 失败（盘面留自研，不影响本次游戏）：{e}")),
             },
             Err(e) => {
@@ -298,9 +287,6 @@ fn run(args: &Args, log_path: &std::path::Path) -> Result<()> {
         println!("等待游戏退出…");
         let status = child.wait().map(|s| s.to_string()).unwrap_or_else(|e| format!("等待失败：{e}"));
         println!("游戏已退出（{status}）。");
-        if launch_at.elapsed() < std::time::Duration::from_secs(15) {
-            println!("提示：游戏在 {:?} 内就退出了，大概率没正常进大厅，请按上面的报错排查运行库/登录组件/兼容层。", launch_at.elapsed());
-        }
         // 瞬时替换：游戏已退，藏匿文件解锁，删掉它。
         if let Some(sw) = swap.as_ref() {
             dllswap::cleanup(sw);

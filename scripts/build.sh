@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 构建交付物：sdo-ffxiv-launcher.exe + sdologinentry64.dll
+# 构建交付物：launcher.exe + sdologinentry64.dll
 #
 # 目标不钉死：TARGET 空 = 用本机默认工具链（本仓库默认走 MSVC + 静态 CRT）。
 #   scripts/build.sh                                              # 默认（MSVC）
@@ -83,17 +83,17 @@ echo "=== cargo build --release --workspace ==="
 cargo build --release --workspace "${CARGO_ARGS[@]}"
 
 echo "=== 交付物（target=$RESOLVED_TARGET，目录 $OUT）==="
-for f in sdo-ffxiv-launcher.exe sdologinentry64.dll; do
+for f in launcher.exe sdologinentry64.dll; do
   [ -f "$OUT/$f" ] || { echo "缺少产物 $OUT/$f" >&2; exit 1; }
 done
 
 mkdir -p dist
-cp -f "$OUT/sdo-ffxiv-launcher.exe" dist/
+cp -f "$OUT/launcher.exe" dist/
 cp -f "$OUT/sdologinentry64.dll" dist/
 
 ls -l dist
 
 echo
 echo "安装：scripts/install.sh \"<安装根，例如 C:\\Games\\FFXIV>\""
-echo "  启动器   → <安装根>\\sdo-ffxiv-launcher.exe"
+echo "  启动器   → <安装根>\\launcher.exe"
 echo "  登录 DLL → <安装根>\\sdo\\sdologin\\sdologinentry64.dll"

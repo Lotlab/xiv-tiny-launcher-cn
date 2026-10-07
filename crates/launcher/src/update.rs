@@ -67,7 +67,7 @@ impl Progress for TerminalProgress {
 
     fn verify_begin(&mut self, files: usize) {
         self.end_line();
-        println!("开始校验本地文件：共 {files} 个（逐个比对大小与 MD5，请耐心等待）…");
+        println!("开始校验本地文件：共 {files} 个…");
     }
 
     fn verify_progress(&mut self, done: usize, total: usize, path: &str) {
@@ -198,7 +198,6 @@ pub fn run(args: &Args, root: &Path) -> Result<()> {
                 Err(e) => {
                     // 版本检查失败不该拦住登录（CDN 抖动 / 403 / 证书问题都会走到这里）。
                     println!("版本检查失败，跳过更新直接登录：{e}");
-                    println!("（如需彻底跳过更新阶段，可用 --no-update）");
                     proto::log::warn(&format!("版本检查失败，跳过更新直接登录：{e}"));
                     return Ok(());
                 }
@@ -217,7 +216,7 @@ pub fn run(args: &Args, root: &Path) -> Result<()> {
                         .map(|l| l.display.as_str())
                         .unwrap_or("");
                     println!(
-                        "本地版本比 CDN 还新（{local} > {}），跳过更新",
+                        "本地版本比服务器还新（{local} > {}），跳过更新",
                         outcome.remote.display
                     );
                     Ok(())
@@ -241,7 +240,6 @@ pub fn run(args: &Args, root: &Path) -> Result<()> {
                             Ok(c) => Some(c),
                             Err(e) => {
                                 println!("无法规划增量更新（{e}），跳过更新直接登录。");
-                                println!("（要强制校验 / 补齐，可用 --force-full）");
                                 proto::log::warn(&format!("无法规划增量更新，跳过更新：{e}"));
                                 return Ok(());
                             }
@@ -264,7 +262,7 @@ pub fn run(args: &Args, root: &Path) -> Result<()> {
 
                     if chain.is_some() {
                         let body = format!(
-                            "发现新版本：{local_display} → {}（{}）\n将执行增量更新：逐跳打 delta，最后补齐缺失文件（不做全量校验）。",
+                            "发现新版本：{local_display} → {}（{}）",
                             outcome.remote.display, outcome.remote.name
                         );
                         if !confirm_before_download(args, &body)? {
@@ -304,7 +302,7 @@ pub fn run(args: &Args, root: &Path) -> Result<()> {
                     } else {
                         // 全量：**先校验，再问是否下载**。
                         println!(
-                            "本地无 internal 版本信息（全新安装或只有 ffxivgame.ver），走全量；先校验本地文件…"
+                            "本地无 internal 版本信息，准备全量校验与下载……"
                         );
                         let full = match patcher::verify_full_with(
                             root,
@@ -331,7 +329,7 @@ pub fn run(args: &Args, root: &Path) -> Result<()> {
                             println!("全部文件校验通过，无需下载。");
                         } else {
                             let body = format!(
-                                "本地无 internal 版本信息（全新安装或只有 ffxivgame.ver）。\n{}下载量可能很大，请确保网络与磁盘空间充足。",
+                                "{} 下载量可能很大，请确保网络与磁盘空间充足。",
                                 pending_text(&full.plan)
                             );
                             if !confirm_before_download(args, &body)? {
@@ -380,7 +378,7 @@ pub fn run(args: &Args, root: &Path) -> Result<()> {
 fn game_running_hint() -> Option<String> {
     crate::proc::is_running(GAME_EXE).then(|| {
         format!(
-            "检测到 {GAME_EXE} 正在运行，跳过本次更新（文件被占用）；如需更新请先关闭游戏。"
+            "检测到 {GAME_EXE} 正在运行，跳过本次更新；如需更新请先关闭游戏。"
         )
     })
 }
@@ -465,20 +463,20 @@ pub fn cleanup_work(root: &Path) {
 
 fn print_check(outcome: &patcher::CheckOutcome) {
     println!(
-        "CDN 最新：{}（{}）",
+        "服务器版本：{}（{}）",
         outcome.remote.display, outcome.remote.name
     );
     match &outcome.local {
         Some(l) => println!(
-            "本地版本：{}（internal={:?}，来源 {:?}）",
-            l.display, l.internal, l.source
+            "本地版本：{}（internal={:?}）",
+            l.display, l.internal
         ),
         None => println!("本地版本：无（全新安装）"),
     }
     let text = match outcome.decision {
         UpdateDecision::UpToDate => "已是最新",
         UpdateDecision::UpdateAvailable => "有更新可用",
-        UpdateDecision::LocalNewer => "本地比 CDN 新",
+        UpdateDecision::LocalNewer => "本地比服务器新",
     };
     println!("结论：{text}");
 }

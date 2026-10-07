@@ -5,8 +5,8 @@ members = ["crates/proto", "crates/sdo-client", "crates/patcher", "crates/launch
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["xiv-tiny-launcher-cn"]
-description = "FFXIV CN (SDO) tiny launcher: self-made EXE + game-side sdologinentry64.dll"
+authors = ["Lotlab"]
+description = "A tiny cross-platform launcher for FFXIV CN client, with SDO V3 launcher protocol"
 license = "MIT"
 
 [workspace.dependencies]

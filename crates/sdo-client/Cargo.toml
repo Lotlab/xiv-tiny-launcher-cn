@@ -3,7 +3,7 @@ name = "sdo-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SDO 网络交互库：HTTP 传输 + 登录/换票/区服/附属请求业务原语（EXE 唯一网络发起方）"
+description = "sdo client"
 
 [dependencies]
 proto = { workspace = true }

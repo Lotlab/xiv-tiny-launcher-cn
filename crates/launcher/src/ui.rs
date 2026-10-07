@@ -230,12 +230,12 @@ pub fn status_end() {
 
 /// 选区菜单：只列 id 与名字，输入数字选择。
 pub fn pick_area(menu_lines: &[String], allowed: &[String]) -> Option<String> {
-    println!("\n可用子区（输入数字后回车；直接回车取消）：");
+    println!("\n可用大区（输入数字后回车；直接回车取消）：");
     for l in menu_lines {
         println!("{l}");
     }
     loop {
-        print!("请选择子区 [{}]: ", allowed.join("/"));
+        print!("请选择大区 [{}]: ", allowed.join("/"));
         let _ = std::io::stdout().flush();
         let mut line = String::new();
         if std::io::stdin().read_line(&mut line).is_err() {
@@ -329,12 +329,10 @@ impl sdo_client::Ui for TerminalUi {
         self.window = None;
         let saved = match crate::qr::save_png_at(png, self.qr_out.as_deref()) {
             Ok(p) => {
-                println!("\n第 {round} 张二维码（也已保存到 {}）：", p.display());
                 Some(p)
             }
             Err(e) => {
                 log::debug(&format!("二维码图片保存失败：{e}"));
-                println!("\n第 {round} 张二维码：");
                 None
             }
         };
@@ -342,7 +340,6 @@ impl sdo_client::Ui for TerminalUi {
             match crate::qrwindow::show(png) {
                 Ok(w) => {
                     self.window = Some(w);
-                    println!("已弹出二维码窗口（本张码结束时自动关闭）。");
                     return;
                 }
                 Err(reason) => log::debug(&format!(
@@ -372,7 +369,7 @@ impl sdo_client::Ui for TerminalUi {
         }
         match wait.phase {
             sdo_client::Phase::ScanCode => status(&format!(
-                "[{:>3}s] 等待扫码　按键：k=勾选保持登录　Ctrl+C=换一张码　q=退出　保持登录：{}",
+                "[{:>3}s] 等待扫码　Ctrl+C=换一张码　q=退出　保持登录：{}",
                 wait.left_secs,
                 if self.keep_login { "已勾选" } else { "未勾选" }
             )),

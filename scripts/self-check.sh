@@ -12,9 +12,9 @@ cd "$(dirname "$0")/.."
 TARGET=${TARGET:-}
 TRIPLE=${TARGET:+"$TARGET/"}
 
-BIN=${1:-target/${TRIPLE}release/sdo-ffxiv-launcher.exe}
+BIN=${1:-target/${TRIPLE}release/launcher.exe}
 if [ ! -f "$BIN" ]; then
-  BIN=target/${TRIPLE}debug/sdo-ffxiv-launcher.exe
+  BIN=target/${TRIPLE}debug/launcher.exe
 fi
 
 echo "使用 $BIN"

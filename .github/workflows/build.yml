@@ -1,0 +1,141 @@
+name: build
+
+on:
+  push:
+    branches: ["master"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["master"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ============ Windows：MSVC 默认工具链（README 默认口径）============
+  build-windows-msvc:
+    runs-on: windows-latest
+    env:
+      SDO_FFXIV_CDN_RSA_PUBLIC_KEY: ${{ secrets.SDO_FFXIV_CDN_RSA_PUBLIC_KEY }}
+      SDO_FFXIV_META_DES_KEY: ${{ secrets.SDO_FFXIV_META_DES_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC host)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Show toolchain
+        run: rustc -vV
+        shell: bash
+
+      # 单一可信入口：测试 + 先编 DLL（供 build.rs embed）+ 编全工作区 + 拷 dist/
+      - name: Build (scripts/build.sh, MSVC)
+        run: bash scripts/build.sh
+        shell: bash
+
+      - name: Self-check
+        run: ./dist/launcher.exe --self-check
+        shell: bash
+
+      - name: Verify build marker
+        run: |
+          grep -qa "xiv-tiny-launcher-cn/sdologinentry64" dist/sdologinentry64.dll || { echo "DLL 缺少自研构建标记" >&2; exit 1; }
+          ls -l dist/
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-msvc
+          path: |
+            dist/launcher.exe
+            dist/sdologinentry64.dll
+          if-no-files-found: error
+
+  # ============ Linux：原生启动器（ELF）+ 交叉编译 Windows DLL ============
+  # scripts/build.sh 是 Windows 交付口径（硬校验 *.exe），Linux 作业在此展开等价步骤：
+  #   1) cargo test（原生） 2) DLL 交叉到 windows-gnu（供 embed + 随包发布）
+  #   3) launcher 原生 release（含内嵌 DLL） 4) 打包 dist-linux/
+  build-linux:
+    runs-on: ubuntu-latest
+    env:
+      SDO_FFXIV_CDN_RSA_PUBLIC_KEY: ${{ secrets.SDO_FFXIV_CDN_RSA_PUBLIC_KEY }}
+      SDO_FFXIV_META_DES_KEY: ${{ secrets.SDO_FFXIV_META_DES_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install mingw-w64 (DLL 交叉链接用)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mingw-w64
+          x86_64-w64-mingw32-gcc --version
+
+      - name: Show toolchain
+        run: rustc -vV; rustup target list --installed
+
+      - name: Test (native Linux)
+        run: cargo test --workspace
+
+      - name: Build DLL (cross → x86_64-pc-windows-gnu)
+        run: cargo build --release -p sdologinentry64 --target x86_64-pc-windows-gnu
+
+      # 先编出 DLL 再编 launcher，build.rs 才能把它 embed 进 ELF（瞬时替换的零附带文件来源）；
+      # 与 scripts/build.sh 的顺序语义一致。
+      - name: Build launcher (native Linux, embed DLL)
+        run: |
+          export SDOLOGINENTRY64_DLL="$PWD/target/x86_64-pc-windows-gnu/release/sdologinentry64.dll"
+          echo "embed DLL: $SDOLOGINENTRY64_DLL"
+          grep -qa "xiv-tiny-launcher-cn/sdologinentry64" "$SDOLOGINENTRY64_DLL" || { echo "DLL 缺少自研构建标记" >&2; exit 1; }
+          cargo build --release -p launcher
+          mkdir -p dist-linux
+          cp -f target/release/launcher dist-linux/
+          cp -f target/x86_64-pc-windows-gnu/release/sdologinentry64.dll dist-linux/
+          ls -l dist-linux/
+
+      - name: Self-check (Linux launcher)
+        run: ./dist-linux/launcher --self-check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist-linux/launcher
+            dist-linux/sdologinentry64.dll
+          if-no-files-found: error
+
+  # ============ 打 tag（v*）时把两平台产物发到 GitHub Release ============
+  release:
+    needs: [build-windows-msvc, build-linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-msvc
+          path: release/windows-msvc
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: release/linux
+
+      - name: Pack zips
+        run: |
+          cd release
+          ls -lR .
+          (cd windows-msvc && zip -9 ../xiv-tiny-launcher-cn-windows-msvc.zip launcher.exe sdologinentry64.dll)
+          (cd linux && zip -9 ../xiv-tiny-launcher-cn-linux.zip launcher sdologinentry64.dll)
+          ls -l *.zip
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/xiv-tiny-launcher-cn-windows-msvc.zip
+            release/xiv-tiny-launcher-cn-linux.zip
+          generate_release_notes: true
