@@ -90,7 +90,7 @@ pub struct Cdn {
     client: Client,
 }
 
-/// 代理策略。缺省**直连**：CDN 对代理出口 IP 敏感，需要代理时显式指定。
+/// 代理策略：跟随环境变量（reqwest 默认）、显式直连，或指定代理。
 #[derive(Debug, Clone, Copy)]
 pub enum ProxyMode<'a> {
     /// 跟随环境变量（`http_proxy` / `https_proxy`）。

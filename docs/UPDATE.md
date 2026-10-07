@@ -67,7 +67,6 @@ sdo-ffxiv-launcher --no-update              # 跳过更新直接登录（离线/
 sdo-ffxiv-launcher --yes                    # 跳过「是否现在更新」的确认（脚本/无人值守）
 sdo-ffxiv-launcher --force-full             # 强制全量（校验并补齐所有文件；--verify 是别名）
 sdo-ffxiv-launcher --insecure-cdn           # CDN 跳过 TLS 校验
-sdo-ffxiv-launcher --cdn-proxy http://...   # CDN 走指定代理（缺省直连）
 ```
 
 ## 更新阶段的行为
@@ -129,8 +128,8 @@ cargo run -p patcher --example incremental_info -- --from 0.0.0.27 --extract
 
 ## 已知点
 
-- CDN 下载对**代理出口 IP** 敏感，本机 `https_proxy` 曾被 CDN 403；因此默认直连，
-  需要代理时用 `--cdn-proxy`。
+- CDN 走**系统代理**：跟随 `http_proxy` / `https_proxy` 等环境变量（reqwest 默认），
+  `no_proxy` 里的域名照常绕过，没有单独的代理开关
 - 全量是 ~118 GB；默认走增量（实测一跳只改 32 个文件 / 37 MB），全量只在全新安装/修复时用。
 - 增量链尾会按目标清单查「文件是否存在」，并校验 20 字节的 `game/ffxivgame.ver`；
   大文件的内容校验（MD5）只在 `--force-full` 时做。`game/LocalVersion3.xml` 因落盘是密文

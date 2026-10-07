@@ -120,10 +120,6 @@ pub struct Args {
     #[arg(long = "insecure-cdn", action = ArgAction::SetTrue)]
     pub insecure_cdn: bool,
 
-    /// CDN 代理；**缺省直连**（CDN 对代理出口 IP 敏感，常报 403）
-    #[arg(long = "cdn-proxy", value_name = "url")]
-    pub cdn_proxy: Option<String>,
-
     /// 日志文件路径。
     #[arg(long, value_name = "path")]
     pub log_file: Option<PathBuf>,
@@ -165,15 +161,10 @@ impl Args {
     }
 
     /// 构造 CDN 客户端（证书策略 + 代理）。
-    ///
-    /// 缺省**直连**：CDN 对代理出口 IP 敏感（本机 `https_proxy` 就曾被 403），
-    /// 需要代理时显式传 `--cdn-proxy`。
+
     pub fn cdn(&self) -> Result<patcher::cdn::Cdn, String> {
-        let proxy = match self.cdn_proxy.as_deref() {
-            Some(p) => patcher::cdn::ProxyMode::Explicit(p),
-            None => patcher::cdn::ProxyMode::NoProxy,
-        };
-        patcher::cdn::Cdn::with_options(self.insecure_cdn, proxy).map_err(|e| e.to_string())
+        patcher::cdn::Cdn::with_options(self.insecure_cdn, patcher::cdn::ProxyMode::Env)
+            .map_err(|e| e.to_string())
     }
 
     /// 生效的手机确认账号：`--account` 优先，否则用上次记住的。
@@ -323,10 +314,11 @@ mod tests {
     }
 
     #[test]
-    fn cdn_proxy_flag() {
-        let a = Args::parse_from(["x", "--cdn-proxy", "http://p:1", "--insecure-cdn"]);
-        assert_eq!(a.cdn_proxy.as_deref(), Some("http://p:1"));
-        assert!(a.insecure_cdn);
-        assert!(Args::parse_from(["x"]).cdn_proxy.is_none());
+    fn cdn_flags() {
+        assert!(!Args::parse_from(["x"]).insecure_cdn);
+        assert!(Args::parse_from(["x", "--insecure-cdn"]).insecure_cdn);
+        // CDN 代理跟系统环境变量走，没有开关
+        assert!(Args::parse_from(["x"]).cdn().is_ok());
+        assert!(Args::try_parse_from(["x", "--cdn-proxy", "http://p:1"]).is_err());
     }
 }
